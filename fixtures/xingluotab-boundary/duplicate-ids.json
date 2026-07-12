@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "type": "xingluotab-backup",
+  "dataVersion": 1700000000000,
+  "spaceList": [
+    {
+      "id": "1700000000001",
+      "name": "Duplicate IDs"
+    }
+  ],
+  "spaces": {
+    "1700000000001": {
+      "id": "1700000000001",
+      "name": "Duplicate IDs",
+      "groups": [
+        {
+          "id": "group_1700000000001",
+          "name": "Group A",
+          "tabs": [
+            {
+              "id": "00000000-0000-4000-8000-000000000001",
+              "kind": "record",
+              "title": "Tab A",
+              "url": "https://example.test/a"
+            }
+          ]
+        },
+        {
+          "id": "group_1700000000001",
+          "name": "Group B",
+          "tabs": [
+            {
+              "id": "00000000-0000-4000-8000-000000000001",
+              "kind": "record",
+              "title": "Tab B",
+              "url": "https://example.test/b"
+            }
+          ]
+        }
+      ],
+      "pins": {}
+    }
+  }
+}

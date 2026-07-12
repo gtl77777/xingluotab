@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "type": "xingluotab-backup",
+  "dataVersion": 1700000000000,
+  "spaceList": [
+    {
+      "id": "1700000000001",
+      "name": "Broken Space"
+    }
+  ],
+  "spaces": {
+    "1700000000001": {
+      "id": "1700000000001",
+      "name": "Broken Space",
+      "pins": {}
+    }
+  }
+}

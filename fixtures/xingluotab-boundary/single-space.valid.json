@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "type": "xingluotab-space",
+  "space": {
+    "id": "1700000000001",
+    "name": "Single Space Fixture",
+    "groups": [
+      {
+        "id": "group_1700000000001",
+        "name": "Fixture Group",
+        "tabs": [
+          {
+            "id": "00000000-0000-4000-8000-000000000001",
+            "kind": "record",
+            "title": "Fixture Tab",
+            "url": "https://example.test/single-space",
+            "favIconUrl": "https://example.test/favicon.ico"
+          }
+        ]
+      }
+    ],
+    "pins": {
+      "group_1700000000001": 1700000000000
+    }
+  }
+}
