@@ -8,11 +8,6 @@ import { createSpaceBackup, importSingleSpace } from "../../domain/import/backup
 import { parseTobyExport } from "../../domain/import/toby";
 import type { ValidationIssue } from "../../domain/import/validation";
 import {
-  getUserSetting,
-  saveUserSetting,
-  USER_SETTING_STORAGE_KEY
-} from "../../domain/settings/repository";
-import {
   createSpace,
   deleteSpace,
   getSpace,
@@ -23,6 +18,7 @@ import {
 import type { SpaceSummary } from "../../domain/space/schema";
 import { isXingLuoTabDragData } from "../../features/dnd/dragData";
 import { useI18n } from "../../features/i18n/useI18n";
+import { useLayoutSettings } from "../../features/settings/LayoutSettingsProvider";
 import {
   isKnownSpaceIcon,
   normalizeSpaceIconName,
@@ -57,10 +53,10 @@ type IconDialogState = {
 
 export function SpaceSidebarPageLayout({ children }: SpaceSidebarPageLayoutProps) {
   const { t } = useI18n();
+  const { isSidebarCollapsed: collapsed, setSidebarCollapsed } = useLayoutSettings();
   const { revision } = useSpaceVersion();
   const navigate = useNavigate();
   const [spaces, setSpaces] = useState<SpaceSummary[]>([]);
-  const [collapsed, setCollapsed] = useState(false);
   const [createName, setCreateName] = useState<string | null>(null);
   const [iconDialog, setIconDialog] = useState<IconDialogState>(null);
   const [deleteTarget, setDeleteTarget] = useState<SpaceSummary | null>(null);
@@ -73,36 +69,16 @@ export function SpaceSidebarPageLayout({ children }: SpaceSidebarPageLayoutProps
   );
 
   const loadSidebarState = useCallback(async () => {
-    const [nextSpaces, setting] = await Promise.all([getSpaceList(), getUserSetting()]);
-    setSpaces(nextSpaces);
-    setCollapsed(setting.isSidebarCollapsed);
+    setSpaces(await getSpaceList());
   }, []);
 
   useEffect(() => {
     void loadSidebarState().catch(() => setStatus(t("common.operationFailed")));
   }, [loadSidebarState, revision, t]);
 
-  useEffect(() => {
-    const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
-      const storedSetting = changes[USER_SETTING_STORAGE_KEY]?.newValue;
-      if (areaName !== "local" || !storedSetting) return;
-      try {
-        const setting = JSON.parse(storedSetting as string) as { isSidebarCollapsed?: boolean };
-        if (typeof setting.isSidebarCollapsed === "boolean") setCollapsed(setting.isSidebarCollapsed);
-      } catch {
-        setCollapsed(false);
-      }
-    };
-
-    chrome.storage.onChanged.addListener(listener);
-    return () => chrome.storage.onChanged.removeListener(listener);
-  }, []);
-
   async function handleToggleCollapsed() {
     const nextCollapsed = !collapsed;
-    setCollapsed(nextCollapsed);
-    const setting = await getUserSetting();
-    await saveUserSetting({ ...setting, isSidebarCollapsed: nextCollapsed });
+    await setSidebarCollapsed(nextCollapsed);
   }
 
   async function handleCreateSpace(event: FormEvent) {

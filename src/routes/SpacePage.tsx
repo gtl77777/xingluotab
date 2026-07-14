@@ -125,6 +125,7 @@ import {
   type CollectionView,
   type ZenTheme
 } from "../features/settings/appearance";
+import { useLayoutSettings } from "../features/settings/LayoutSettingsProvider";
 import {
   isKnownSpaceIcon,
   normalizeSpaceIconName,
@@ -209,6 +210,7 @@ const defaultState: SpaceState = {
 };
 
 const CARD_GRID_VIRTUALIZATION_THRESHOLD = 60;
+const GROUP_CHROME_HEIGHT = 64;
 const DND_SCROLL_SETTLE_MS = 180;
 const DND_EDGE_SCROLL_MAX_PX_PER_SECOND = 480;
 const DND_EDGE_SCROLL_ZONE_PX = 80;
@@ -239,14 +241,18 @@ function scrollGroupContentByWheel(scroller: HTMLDivElement, deltaY: number, del
 
 export function SpacePage({ missing }: SpacePageProps) {
   const { t } = useI18n();
+  const {
+    isSidebarCollapsed: isSpaceSidebarCollapsed,
+    isSessionBarCollapsed,
+    setSidebarCollapsed: setSpaceSidebarCollapsed,
+    setSessionBarCollapsed
+  } = useLayoutSettings();
   const { revision } = useSpaceVersion();
   const { id } = useParams();
   const navigate = useNavigate();
   const [state, setState] = useState(defaultState);
   const [query, setQuery] = useState("");
   const [sessionTabs, setSessionTabs] = useState<SessionTab[]>([]);
-  const [isSpaceSidebarCollapsed, setSpaceSidebarCollapsed] = useState(false);
-  const [isSessionBarCollapsed, setSessionBarCollapsed] = useState(false);
   const [sessionTabSort, setSessionTabSort] = useState<"asc" | "desc">("desc");
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<string[]>([]);
   const [isGroupLayoutAnimating, setGroupLayoutAnimating] = useState(false);
@@ -395,8 +401,6 @@ export function SpacePage({ missing }: SpacePageProps) {
     try {
       const setting = await getUserSetting();
       includePinnedSessionTabsRef.current = setting.showPinnedSessionTab === "always";
-      setSpaceSidebarCollapsed(setting.isSidebarCollapsed);
-      setSessionBarCollapsed(setting.isSessionBarCollapsed);
       setSessionTabSort(setting.sessionTabSort || "desc");
       collapsedGroupIdsRef.current = setting.collapsedGroups;
       setCollapsedGroupIds(setting.collapsedGroups);
@@ -1459,23 +1463,13 @@ export function SpacePage({ missing }: SpacePageProps) {
   }
 
   async function handleToggleSessionBarCollapsed() {
-    const setting = await getUserSetting();
     const nextCollapsed = !isSessionBarCollapsed;
-    await saveUserSetting({
-      ...setting,
-      isSessionBarCollapsed: nextCollapsed
-    });
-    setSessionBarCollapsed(nextCollapsed);
+    await setSessionBarCollapsed(nextCollapsed);
   }
 
   async function handleToggleSpaceSidebarCollapsed() {
-    const setting = await getUserSetting();
     const nextCollapsed = !isSpaceSidebarCollapsed;
-    await saveUserSetting({
-      ...setting,
-      isSidebarCollapsed: nextCollapsed
-    });
-    setSpaceSidebarCollapsed(nextCollapsed);
+    await setSpaceSidebarCollapsed(nextCollapsed);
   }
 
   async function handleToggleSessionTabSort() {
@@ -1746,7 +1740,7 @@ export function SpacePage({ missing }: SpacePageProps) {
         onChange={(event) => void handleImportToby(event.currentTarget.files?.[0])}
       />
 
-      <section className="relative flex min-w-0 flex-1 flex-col">
+      <section data-space-main="true" className="relative flex min-w-0 flex-1 flex-col">
         {isZenMode ? (
           <div className="group/zen-exit fixed right-0 top-0 z-40 flex h-24 w-32 items-start justify-end p-4">
             <div
@@ -1914,9 +1908,11 @@ export function SpacePage({ missing }: SpacePageProps) {
                   getItemKey={(index) => visibleGroups[index]?.id ?? index}
                   estimateSize={(index) => {
                     const group = visibleGroups[index];
-                    if (!group || (!isZenMode && collapsedGroupIdSet.has(group.id))) return 52;
+                    if (!group || (!isZenMode && collapsedGroupIdSet.has(group.id))) return GROUP_CHROME_HEIGHT;
                     const metrics = VIEW_METRICS[collectionView];
-                    return 58 + Math.max(metrics.rowHeight, Math.ceil(group.tabs.length / estimatedGroupColumns) * metrics.rowHeight);
+                    if (group.tabs.length === 0) return GROUP_CHROME_HEIGHT + 60;
+                    const rowCount = Math.ceil(group.tabs.length / estimatedGroupColumns);
+                    return GROUP_CHROME_HEIGHT + rowCount * metrics.rowHeight - metrics.gap;
                   }}
                   animateLayout={isGroupLayoutAnimating}
                   isDragActive={Boolean(activeDrag)}
@@ -1935,7 +1931,7 @@ export function SpacePage({ missing }: SpacePageProps) {
                     });
                     return preloadFavicons(faviconItems);
                   }}
-                  renderPreview={(groupIndex, scrollOffset, viewportHeight) => {
+                  renderPreview={(groupIndex, scrollOffset, viewportHeight, buffered) => {
                     const group = visibleGroups[groupIndex];
                     if (!group) return null;
                     return (
@@ -1949,8 +1945,10 @@ export function SpacePage({ missing }: SpacePageProps) {
                         columns={estimatedGroupColumns}
                         scrollOffset={scrollOffset}
                         viewportHeight={viewportHeight}
-                        activeDragType={activeDrag?.type ?? null}
-                        onOpenTab={(tab, event) => void handleOpenTab(tab, event)}
+                        activeDragType={buffered ? null : activeDrag?.type ?? null}
+                        buffered={buffered}
+                        t={t}
+                        onOpenTab={handleOpenTab}
                       />
                     );
                   }}
@@ -1969,7 +1967,7 @@ export function SpacePage({ missing }: SpacePageProps) {
                     >
                       {(sortable) => (
                         <>
-                      <header className="mb-2 flex items-center justify-between">
+                      <header className="group/header mb-2 flex items-center justify-between">
                         <div className="flex min-w-0 flex-1 items-center gap-2">
                           {isPinned ? (
                             <Pin className="h-4 w-4 shrink-0 text-blue-500" />
@@ -2027,7 +2025,7 @@ export function SpacePage({ missing }: SpacePageProps) {
                             />
                           </button>}
                         </div>
-                        {isZenMode ? null : <div className="flex shrink-0 flex-row items-center gap-2 opacity-0 transition-opacity duration-200 group-focus-within:opacity-100 group-hover:opacity-100">
+                        {isZenMode ? null : <div className="flex shrink-0 flex-row items-center gap-2 opacity-0 transition-opacity duration-200 group-focus-within/header:opacity-100 group-hover/header:opacity-100">
                           <Button size="icon" variant="ghost" title={t("space.openGroup")} onClick={(event) => void handleOpenGroup(group, event)}>
                             <FolderOpen className="h-4 w-4 text-gray-500" />
                           </Button>
@@ -2106,6 +2104,7 @@ export function SpacePage({ missing }: SpacePageProps) {
                             <VirtualizedTabGrid
                               scrollElementRef={groupScrollRef}
                               virtualGroupStart={virtualGroupStart}
+                              initialColumns={estimatedGroupColumns}
                               spaceId={state.space!.id}
                               group={group}
                               view={collectionView}
@@ -2428,12 +2427,23 @@ export function SpacePage({ missing }: SpacePageProps) {
 }
 
 function GroupCollapseContent({ collapsed, children }: { collapsed: boolean; children: ReactNode }) {
+  const previousCollapsedRef = useRef(collapsed);
+  const shouldAnimateExpansion = previousCollapsedRef.current && !collapsed;
+
+  useEffect(() => {
+    previousCollapsedRef.current = collapsed;
+  }, [collapsed]);
+
   return (
     <div
       data-group-collapse-content="true"
       data-state={collapsed ? "closed" : "open"}
       aria-hidden={collapsed}
-      className={collapsed ? "hidden" : "animate-in fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none"}
+      className={collapsed
+        ? "hidden"
+        : shouldAnimateExpansion
+          ? "animate-in fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none"
+          : ""}
     >
       {collapsed ? null : children}
     </div>
@@ -2460,7 +2470,7 @@ function VirtualizedGroupWindow({
   isDragActive: boolean;
   activeGroupId: string | null;
   prepareContent: (items: Array<{ index: number; scrollOffset: number; viewportHeight: number }>) => Promise<void>;
-  renderPreview: (index: number, scrollOffset: number, viewportHeight: number) => ReactNode;
+  renderPreview: (index: number, scrollOffset: number, viewportHeight: number, buffered: boolean) => ReactNode;
   children: (index: number, start: number) => ReactNode;
 }) {
   const virtualizer = useVirtualizer({
@@ -2477,31 +2487,83 @@ function VirtualizedGroupWindow({
   const isScrolling = virtualizer.isScrolling;
   const virtualKeySignature = virtualItems.map((item) => String(item.key)).join("\u001f");
   const [interactiveGroupKeys, setInteractiveGroupKeys] = useState<Set<string>>(() => new Set());
+  const [interactiveLayerRevealed, setInteractiveLayerRevealed] = useState(false);
+  const prepareContentRef = useRef(prepareContent);
+  prepareContentRef.current = prepareContent;
 
   useEffect(() => {
-    const keys = virtualItems.map((item) => String(item.key));
     if (isScrolling) {
+      setInteractiveLayerRevealed(false);
       setInteractiveGroupKeys((current) => current.size === 0 ? current : new Set());
       return;
     }
-    if (activeGroupId || keys.every((key) => interactiveGroupKeys.has(key))) return;
+    if (activeGroupId || virtualItems.length === 0) return;
+    const currentKeys = virtualItems.map((item) => String(item.key));
+    if (interactiveLayerRevealed && currentKeys.every((key) => interactiveGroupKeys.has(key))) return;
+    setInteractiveLayerRevealed(false);
     let cancelled = false;
+    let activationFrame: number | null = null;
+    let revealFrame: number | null = null;
     const scroller = scrollElementRef.current;
     const scrollTop = scroller?.scrollTop ?? 0;
     const viewportHeight = scroller?.clientHeight ?? 900;
+    const viewportBottom = scrollTop + viewportHeight;
+    const viewportCenter = scrollTop + viewportHeight / 2;
+    const activationKeys = [...virtualItems]
+      .sort((left, right) => {
+        const leftVisible = left.end > scrollTop && left.start < viewportBottom;
+        const rightVisible = right.end > scrollTop && right.start < viewportBottom;
+        if (leftVisible !== rightVisible) return leftVisible ? -1 : 1;
+        const leftCenter = (left.start + left.end) / 2;
+        const rightCenter = (right.start + right.end) / 2;
+        return Math.abs(leftCenter - viewportCenter) - Math.abs(rightCenter - viewportCenter);
+      })
+      .map((item) => String(item.key))
+      .filter((key) => !interactiveGroupKeys.has(key));
     const previewItems = virtualItems.map((item) => ({
       index: item.index,
       scrollOffset: Math.max(0, scrollTop - item.start),
       viewportHeight
     }));
-    void prepareContent(previewItems).then(() => {
+    void prepareContentRef.current(previewItems).then(() => {
       if (cancelled) return;
-      setInteractiveGroupKeys(new Set(keys));
+      if (activationKeys.length === 0) {
+        setInteractiveLayerRevealed(true);
+        return;
+      }
+      let activationIndex = 0;
+      const activateNextGroup = () => {
+        if (cancelled) return;
+        const key = activationKeys[activationIndex];
+        activationIndex += 1;
+        if (key) {
+          setInteractiveGroupKeys((current) => {
+            if (current.has(key)) return current;
+            const next = new Set(current);
+            next.add(key);
+            return next;
+          });
+        }
+        if (activationIndex < activationKeys.length) {
+          activationFrame = window.requestAnimationFrame(activateNextGroup);
+        } else {
+          // Keep the frozen preview visible until React has committed every
+          // interactive group, then reveal the prepared layer atomically.
+          revealFrame = window.requestAnimationFrame(() => {
+            revealFrame = window.requestAnimationFrame(() => {
+              if (!cancelled) setInteractiveLayerRevealed(true);
+            });
+          });
+        }
+      };
+      activationFrame = window.requestAnimationFrame(activateNextGroup);
     });
     return () => {
       cancelled = true;
+      if (activationFrame != null) window.cancelAnimationFrame(activationFrame);
+      if (revealFrame != null) window.cancelAnimationFrame(revealFrame);
     };
-  }, [activeGroupId, interactiveGroupKeys, isScrolling, scrollElementRef, virtualKeySignature]);
+  }, [activeGroupId, isScrolling, scrollElementRef, virtualKeySignature]);
 
   return (
     <div className="relative min-w-0" style={{ height: `${virtualizer.getTotalSize()}px` }}>
@@ -2512,30 +2574,56 @@ function VirtualizedGroupWindow({
       <div className="min-w-0 will-change-transform" style={{ transform: `translate3d(0, ${windowStart}px, 0)` }}>
         {virtualItems.map((virtualItem) => {
           const key = String(virtualItem.key);
-          const showPreview = key !== activeGroupId && (isScrolling || !interactiveGroupKeys.has(key));
+          const isActiveGroup = key === activeGroupId;
+          const interactiveReady = isActiveGroup || interactiveGroupKeys.has(key);
+          const showPreviewOnly = !isActiveGroup && (isScrolling || !interactiveReady);
+          const showBufferedPreview = !isActiveGroup && !isScrolling && interactiveReady && !interactiveLayerRevealed;
           return (
           <div
             key={virtualItem.key}
             data-index={virtualItem.index}
             data-group-virtual-row="true"
             ref={virtualizer.measureElement}
-            style={showPreview ? { height: `${virtualItem.size}px` } : undefined}
+            style={showPreviewOnly ? { height: `${virtualItem.size}px` } : undefined}
             className={[
               "w-full",
-              showPreview ? "" : "xingluotab-group-row-reveal",
+              showBufferedPreview ? "relative" : "",
               animateLayout
                 ? "transition-transform duration-200 ease-out motion-reduce:transition-none"
                 : ""
             ].join(" ")}
           >
-            {showPreview ? (
+            {showPreviewOnly ? (
               renderPreview(
                 virtualItem.index,
                 Math.max(0, (scrollElementRef.current?.scrollTop ?? 0) - virtualItem.start),
-                scrollElementRef.current?.clientHeight ?? 900
+                scrollElementRef.current?.clientHeight ?? 900,
+                false
               )
             ) : (
-              <VirtualizedGroupContent render={children} index={virtualItem.index} start={virtualItem.start} />
+              <>
+                {showBufferedPreview ? (
+                  <div
+                    aria-hidden="true"
+                    data-group-buffer-overlay="true"
+                    className="pointer-events-none absolute inset-0 z-10 overflow-hidden"
+                  >
+                    {renderPreview(
+                      virtualItem.index,
+                      Math.max(0, (scrollElementRef.current?.scrollTop ?? 0) - virtualItem.start),
+                      scrollElementRef.current?.clientHeight ?? 900,
+                      true
+                    )}
+                  </div>
+                ) : null}
+                <div
+                  aria-hidden={showBufferedPreview}
+                  data-group-interactive-layer="true"
+                  className={showBufferedPreview ? "invisible" : ""}
+                >
+                  <VirtualizedGroupContent render={children} index={virtualItem.index} start={virtualItem.start} />
+                </div>
+              </>
             )}
           </div>
           );
@@ -2586,7 +2674,7 @@ function getStaticPreviewTabWindow(
   const effectiveColumns = view === "list" ? 1 : Math.max(1, columns);
   const totalRows = Math.ceil(group.tabs.length / effectiveColumns);
   const firstRow = isLargeGroup
-    ? Math.max(0, Math.floor(Math.max(0, scrollOffset - 58) / metrics.rowHeight) - 2)
+    ? Math.max(0, Math.floor(Math.max(0, scrollOffset - GROUP_CHROME_HEIGHT) / metrics.rowHeight) - 2)
     : 0;
   const rowCount = isLargeGroup
     ? Math.min(totalRows - firstRow, Math.ceil(viewportHeight / metrics.rowHeight) + 4)
@@ -2613,6 +2701,8 @@ const StaticGroupPreview = memo(function StaticGroupPreview({
   scrollOffset,
   viewportHeight,
   activeDragType,
+  buffered,
+  t,
   onOpenTab
 }: {
   group: TabGroup;
@@ -2625,16 +2715,20 @@ const StaticGroupPreview = memo(function StaticGroupPreview({
   scrollOffset: number;
   viewportHeight: number;
   activeDragType: XingLuoTabDragData["type"] | null;
+  buffered: boolean;
+  t: Translate;
   onOpenTab: (tab: RecordTab, event: MouseEvent) => void;
 }) {
   const previewWindow = getStaticPreviewTabWindow(group, view, columns, scrollOffset, viewportHeight);
   const groupDropEnabled = activeDragType === "group" || activeDragType === "tab" || activeDragType === "session-tab";
   const tabDropEnabled = activeDragType === "tab" || activeDragType === "session-tab";
-  const groupDroppableId = dndId.group(spaceId, group.id);
+  const groupDroppableId = buffered
+    ? `${dndId.group(spaceId, group.id)}:buffered-preview`
+    : dndId.group(spaceId, group.id);
   const groupDroppable = useDroppable({
     id: groupDroppableId,
     data: { type: "group", spaceId, groupId: group.id } satisfies GroupDragData,
-    disabled: !groupDropEnabled
+    disabled: buffered || !groupDropEnabled
   });
   const handleClick = (event: MouseEvent<HTMLElement>) => {
     if (activeDragType) return;
@@ -2651,7 +2745,8 @@ const StaticGroupPreview = memo(function StaticGroupPreview({
           groupId: group.id,
           tab,
           tabIndex: previewWindow.firstTabIndex + previewOffset,
-          view
+          view,
+          reserveActions: !zenMode
         };
         return tabDropEnabled
           ? <StaticTabDropPreviewCard key={tab.id} {...props} />
@@ -2670,24 +2765,49 @@ const StaticGroupPreview = memo(function StaticGroupPreview({
       aria-busy="true"
       onClick={handleClick}
       className={[
-        "h-full min-h-12 overflow-hidden border-b px-4 pb-3 pt-2",
+        "h-full min-h-12 overflow-hidden border-b px-4 pb-3 pt-2 transition-colors last:border-b-0",
         zenMode ? "zen-group my-3 rounded-2xl border-b-0 px-5 py-4" : "",
         groupDroppable.isOver ? "bg-accent/70" : ""
       ].join(" ")}
     >
-      <header className="mb-2 flex h-8 min-w-0 items-center gap-2">
-        {pinned ? <Pin className="h-4 w-4 shrink-0 text-blue-500" /> : zenMode ? null : <GripVertical className="h-4 w-4 shrink-0 text-gray-400" />}
-        <h2 className="min-w-0 truncate text-sm font-medium">{group.name}</h2>
-        {(group.tags ?? []).slice(0, 3).map((tag) => (
-          <span key={tag} className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">{tag}</span>
-        ))}
-        <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">{group.tabs.length}</span>
+      <header className="group/header mb-2 flex items-center justify-between">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          {pinned ? <Pin className="h-4 w-4 shrink-0 text-blue-500" /> : zenMode ? null : <GripVertical className="h-4 w-4 shrink-0 text-gray-400" />}
+          <h2 className={["min-w-0 truncate text-sm", zenMode ? "font-semibold" : "font-medium"].join(" ")}>{group.name}</h2>
+          {zenMode ? null : (
+            <span className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground">
+              <Tag className="h-3.5 w-3.5" />
+              <span>{(group.tags?.length ?? 0) > 0 ? t("space.editTags") : t("space.addTags")}</span>
+            </span>
+          )}
+          {(group.tags ?? []).map((tag) => (
+            <span key={tag} data-group-tag={tag} className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+              {tag}
+            </span>
+          ))}
+          {zenMode ? null : (
+            <span className="flex h-8 min-w-8 flex-1 flex-row items-center text-muted-foreground">
+              <ChevronDown className={["h-4 w-4", collapsed ? "-rotate-90" : "rotate-0"].join(" ")} />
+            </span>
+          )}
+        </div>
+        {zenMode ? null : (
+          <div aria-hidden="true" className="flex shrink-0 flex-row items-center gap-2 opacity-0">
+            <span className="h-9 w-9" />
+            <span className="h-9 w-9" />
+            <span className="h-9 w-9" />
+          </div>
+        )}
       </header>
       {collapsed ? null : previewWindow.tabs.length === 0 ? (
-        <div
-          data-empty-group="true"
-          className="min-h-[60px] rounded-lg border-2 border-dashed border-gray-200 transition-colors data-[tab-drop-preview=true]:border-blue-400 data-[tab-drop-preview=true]:bg-blue-50/70 dark:border-gray-700 dark:data-[tab-drop-preview=true]:border-blue-500 dark:data-[tab-drop-preview=true]:bg-blue-950/30"
-        />
+        <div className="flex min-h-[60px] items-center justify-center rounded-lg border-2 border-dashed border-gray-200 dark:border-gray-700">
+          <div
+            data-empty-group="true"
+            className="empty-placeholder pointer-events-none w-full rounded-md border-2 border-dashed border-gray-200 py-4 text-center transition-colors data-[tab-drop-preview=true]:border-blue-400 data-[tab-drop-preview=true]:bg-blue-50/70 dark:border-gray-700 dark:data-[tab-drop-preview=true]:border-blue-500 dark:data-[tab-drop-preview=true]:bg-blue-950/30"
+          >
+            <p className="text-gray-400">{t("space.emptyGroup")}</p>
+          </div>
+        </div>
       ) : previewWindow.isLargeGroup ? (
         <div className="relative w-full" style={{ height: `${previewWindow.totalRows * previewWindow.metrics.rowHeight}px` }}>
           <div className="absolute inset-x-0" style={{ top: `${previewWindow.firstRow * previewWindow.metrics.rowHeight}px` }}>
@@ -2705,6 +2825,7 @@ type StaticTabPreviewCardProps = {
   tab: RecordTab;
   tabIndex: number;
   view: CollectionView;
+  reserveActions: boolean;
 };
 
 function StaticTabDropPreviewCard(props: StaticTabPreviewCardProps) {
@@ -2716,7 +2837,7 @@ function StaticTabDropPreviewCard(props: StaticTabPreviewCardProps) {
   return <StaticTabPreviewCard {...props} nodeRef={droppable.setNodeRef} isOver={droppable.isOver} droppableId={droppableId} />;
 }
 
-function StaticTabPreviewCard({ tab, tabIndex, view, nodeRef, isOver = false, droppableId }: StaticTabPreviewCardProps & {
+function StaticTabPreviewCard({ tab, tabIndex, view, reserveActions, nodeRef, isOver = false, droppableId }: StaticTabPreviewCardProps & {
   nodeRef?: (node: HTMLDivElement | null) => void;
   isOver?: boolean;
   droppableId?: string;
@@ -2725,6 +2846,7 @@ function StaticTabPreviewCard({ tab, tabIndex, view, nodeRef, isOver = false, dr
     <div
       ref={nodeRef}
       data-static-tab-preview="true"
+      data-record-tab-surface="true"
       data-static-droppable-id={droppableId}
       data-static-tab-index={tabIndex}
       data-tab-id={tab.id}
@@ -2755,6 +2877,7 @@ function StaticTabPreviewCard({ tab, tabIndex, view, nodeRef, isOver = false, dr
         <p className={view === "card" ? "line-clamp-2 leading-5" : "truncate text-sm"}>{tab.title || tab.url}</p>
         {view === "list" ? <p className="truncate text-[11px] text-muted-foreground">{tab.url}</p> : null}
       </div>
+      {reserveActions ? <span aria-hidden="true" className="ml-auto h-8 w-8 shrink-0" /> : null}
     </div>
   );
 }
@@ -2789,7 +2912,7 @@ function SortableGroupSection({
         transition: sortable.transition ?? "transform 220ms ease"
       }}
       className={[
-        "group border-b px-4 pb-3 pt-2 transition-colors last:border-b-0",
+        "border-b px-4 pb-3 pt-2 transition-colors last:border-b-0",
         zenMode ? "zen-group my-3 rounded-2xl border-b-0 px-5 py-4" : "",
         sortable.isOver ? "bg-accent/70" : "",
         sortable.isDragging ? "z-20 opacity-30" : ""
@@ -2803,6 +2926,7 @@ function SortableGroupSection({
 function VirtualizedTabGrid({
   scrollElementRef,
   virtualGroupStart,
+  initialColumns,
   spaceId,
   group,
   view,
@@ -2815,6 +2939,7 @@ function VirtualizedTabGrid({
 }: {
   scrollElementRef: { current: HTMLDivElement | null };
   virtualGroupStart: number;
+  initialColumns: number;
   spaceId: string;
   group: TabGroup;
   view: CollectionView;
@@ -2826,7 +2951,10 @@ function VirtualizedTabGrid({
   onDeleteTab: (tab: RecordTab) => void;
 }) {
   const gridRef = useRef<HTMLDivElement | null>(null);
-  const [layout, setLayout] = useState({ columns: VIEW_METRICS[view].estimatedColumns, offsetTop: 0 });
+  const [layout, setLayout] = useState({
+    columns: view === "list" ? 1 : Math.max(1, initialColumns),
+    offsetTop: 0
+  });
   const metrics = VIEW_METRICS[view];
 
   useEffect(() => {
@@ -2942,6 +3070,7 @@ function TabCard({
     <div
       ref={sortable.setNodeRef}
       data-record-tab-card="true"
+      data-record-tab-surface="true"
       data-tab-id={tab.id}
       data-tab-index={tabIndex}
       data-dnd-over={sortable.isOver || undefined}
@@ -2954,7 +3083,7 @@ function TabCard({
         transition: sortable.transition ?? "transform 200ms ease"
       }}
       className={[
-         "group relative flex touch-none flex-row items-center rounded-md border bg-card text-card-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
+         "group/tab relative flex touch-none flex-row items-center rounded-md border bg-card text-card-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
          disabled ? "cursor-pointer" : "cursor-grab active:cursor-grabbing",
          view === "card" ? "h-14 p-2" : "",
          view === "list" ? "h-11 px-3 py-1.5" : "",
@@ -2994,7 +3123,7 @@ function TabCard({
               size="sm"
               variant="ghost"
               title={t("space.tabActions")}
-              className="pointer-events-auto h-8 w-8 p-0 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
+              className="pointer-events-auto h-8 w-8 p-0 opacity-0 transition-opacity group-focus-within/tab:opacity-100 group-hover/tab:opacity-100"
             >
               <MoreHorizontal className="h-4 w-4" />
             </Button>

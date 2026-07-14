@@ -5,6 +5,7 @@ import { SpaceSidebarPageLayout } from "../components/layout/SpaceSidebarPageLay
 import { getUserSetting } from "../domain/settings/repository";
 import { getSpaceList } from "../domain/space/repository";
 import { SpaceVersionProvider, useSpaceVersion } from "../features/storage/spaceVersionStore";
+import { LayoutSettingsProvider } from "../features/settings/LayoutSettingsProvider";
 import { AboutPage } from "../routes/AboutPage";
 import { SettingsPage } from "../routes/SettingsPage";
 import { SpacePage } from "../routes/SpacePage";
@@ -13,39 +14,41 @@ import { SyncPage } from "../routes/SyncPage";
 export function App() {
   return (
     <SpaceVersionProvider>
-      <HashRouter>
-        <AppShell>
-          <Routes>
-            <Route path="/" element={<LastVisitedSpaceRedirect />} />
-            <Route path="/space/:id" element={<SpacePage />} />
-            <Route
-              path="/sync"
-              element={
-                <SpaceSidebarPageLayout>
-                  <SyncPage />
-                </SpaceSidebarPageLayout>
-              }
-            />
-            <Route
-              path="/settings"
-              element={
-                <SpaceSidebarPageLayout>
-                  <SettingsPage />
-                </SpaceSidebarPageLayout>
-              }
-            />
-            <Route
-              path="/about"
-              element={
-                <SpaceSidebarPageLayout>
-                  <AboutPage />
-                </SpaceSidebarPageLayout>
-              }
-            />
-            <Route path="*" element={<SpacePage missing />} />
-          </Routes>
-        </AppShell>
-      </HashRouter>
+      <LayoutSettingsProvider>
+        <HashRouter>
+          <AppShell>
+            <Routes>
+              <Route path="/" element={<LastVisitedSpaceRedirect />} />
+              <Route path="/space/:id" element={<SpacePage />} />
+              <Route
+                path="/sync"
+                element={
+                  <SpaceSidebarPageLayout>
+                    <SyncPage />
+                  </SpaceSidebarPageLayout>
+                }
+              />
+              <Route
+                path="/settings"
+                element={
+                  <SpaceSidebarPageLayout>
+                    <SettingsPage />
+                  </SpaceSidebarPageLayout>
+                }
+              />
+              <Route
+                path="/about"
+                element={
+                  <SpaceSidebarPageLayout>
+                    <AboutPage />
+                  </SpaceSidebarPageLayout>
+                }
+              />
+              <Route path="*" element={<SpacePage missing />} />
+            </Routes>
+          </AppShell>
+        </HashRouter>
+      </LayoutSettingsProvider>
     </SpaceVersionProvider>
   );
 }

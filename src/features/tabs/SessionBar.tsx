@@ -43,7 +43,10 @@ export function SessionBar({
   });
 
   return (
-    <aside className={["relative shrink-0 transition-all duration-300 ease-in-out", isCollapsed ? "w-8" : "w-64"].join(" ")}>
+    <aside
+      data-session-bar="true"
+      className={["relative shrink-0 transition-all duration-300 ease-in-out", isCollapsed ? "w-8" : "w-64"].join(" ")}
+    >
       <button
         type="button"
         title={isCollapsed ? t("session.expand") : t("session.collapse")}

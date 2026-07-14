@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router";
 import {
   getUserSetting,
-  saveUserSetting,
   USER_SETTING_STORAGE_KEY
 } from "../../domain/settings/repository";
 import { Button } from "../ui/button";
@@ -18,6 +17,7 @@ import {
 } from "../../features/settings/appearance";
 import { watchDocumentAppearance, type ThemeMode } from "../../features/settings/theme";
 import { BrandMark } from "../brand/BrandMark";
+import { useLayoutSettings } from "../../features/settings/LayoutSettingsProvider";
 
 type AppShellProps = {
   children: ReactNode;
@@ -32,9 +32,9 @@ const navItems = [
 
 export function AppShell({ children }: AppShellProps) {
   const { t } = useI18n();
+  const { isSidebarCollapsed: sidebarCollapsed, setSidebarCollapsed } = useLayoutSettings();
   const location = useLocation();
   const [searchOpen, setSearchOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>("light");
   const [accentTheme, setAccentTheme] = useState<AccentTheme>("pink");
   const [lightVisualTheme, setLightVisualTheme] = useState<LightVisualTheme>("professional");
@@ -69,7 +69,6 @@ export function AppShell({ children }: AppShellProps) {
       setAccentTheme(setting.accentTheme ?? "pink");
       setLightVisualTheme(setting.lightVisualTheme ?? "professional");
       setDarkVisualTheme(setting.darkVisualTheme ?? "professional");
-      setSidebarCollapsed(setting.isSidebarCollapsed);
     });
 
     const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
@@ -77,7 +76,6 @@ export function AppShell({ children }: AppShellProps) {
       if (areaName !== "local" || !storedSetting) return;
       try {
         const setting = JSON.parse(storedSetting as string) as {
-          isSidebarCollapsed?: boolean;
           theme?: "light" | "dark" | "system";
           accentTheme?: AccentTheme;
           lightVisualTheme?: LightVisualTheme;
@@ -87,9 +85,6 @@ export function AppShell({ children }: AppShellProps) {
         setAccentTheme(setting.accentTheme ?? "pink");
         setLightVisualTheme(setting.lightVisualTheme ?? "professional");
         setDarkVisualTheme(setting.darkVisualTheme ?? "professional");
-        if (typeof setting.isSidebarCollapsed === "boolean") {
-          setSidebarCollapsed(setting.isSidebarCollapsed);
-        }
       } catch {
         setTheme("light");
         setAccentTheme("pink");
@@ -109,9 +104,7 @@ export function AppShell({ children }: AppShellProps) {
 
   async function handleToggleSidebar() {
     const nextCollapsed = !sidebarCollapsed;
-    setSidebarCollapsed(nextCollapsed);
-    const setting = await getUserSetting();
-    await saveUserSetting({ ...setting, isSidebarCollapsed: nextCollapsed });
+    await setSidebarCollapsed(nextCollapsed);
   }
 
   return (
