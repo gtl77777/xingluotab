@@ -17,35 +17,16 @@ export function App() {
       <LayoutSettingsProvider>
         <HashRouter>
           <AppShell>
-            <Routes>
-              <Route path="/" element={<LastVisitedSpaceRedirect />} />
-              <Route path="/space/:id" element={<SpacePage />} />
-              <Route
-                path="/sync"
-                element={
-                  <SpaceSidebarPageLayout>
-                    <SyncPage />
-                  </SpaceSidebarPageLayout>
-                }
-              />
-              <Route
-                path="/settings"
-                element={
-                  <SpaceSidebarPageLayout>
-                    <SettingsPage />
-                  </SpaceSidebarPageLayout>
-                }
-              />
-              <Route
-                path="/about"
-                element={
-                  <SpaceSidebarPageLayout>
-                    <AboutPage />
-                  </SpaceSidebarPageLayout>
-                }
-              />
-              <Route path="*" element={<SpacePage missing />} />
-            </Routes>
+            <SpaceSidebarPageLayout>
+              <Routes>
+                <Route path="/" element={<LastVisitedSpaceRedirect />} />
+                <Route path="/space/:id" element={<SpacePage />} />
+                <Route path="/sync" element={<SyncPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/about" element={<AboutPage />} />
+                <Route path="*" element={<SpacePage missing />} />
+              </Routes>
+            </SpaceSidebarPageLayout>
           </AppShell>
         </HashRouter>
       </LayoutSettingsProvider>

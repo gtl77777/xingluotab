@@ -564,6 +564,54 @@ async function main() {
       maxSessionBarWidthDeltaPx: Math.round(Math.max(0, ...routeSamples.map((sample) => Math.abs(sample.sessionBarWidth - routeBaseline.sessionBarWidth))) * 100) / 100
     };
 
+    const settingsRouteSamples = await cdp.evaluate(`new Promise((resolve) => {
+      const sidebar = document.querySelector('[data-space-sidebar="true"]');
+      const baselineRowCount = document.querySelectorAll('[data-space-row="true"]').length;
+      const samples = [];
+      let phase = 'settings';
+      let phaseStartedAt = performance.now();
+      location.hash = '#/settings';
+      const sample = (now) => {
+        const currentSidebar = document.querySelector('[data-space-sidebar="true"]');
+        const spaceMain = document.querySelector('[data-space-main="true"]');
+        samples.push({
+          phase,
+          hash: location.hash,
+          sidebarSame: currentSidebar === sidebar,
+          sidebarRowCount: document.querySelectorAll('[data-space-row="true"]').length,
+          baselineRowCount,
+          settingsReady: Boolean(document.querySelector('[data-settings-page="true"][data-settings-ready="true"]')),
+          layoutLoading: Boolean(document.querySelector('[data-layout-settings-loading="true"]')),
+          spaceMain: Boolean(spaceMain),
+          spaceLoading: spaceMain?.dataset.spaceLoading ?? null,
+          visibleGroupCount:
+            document.querySelectorAll('[data-group-card="true"]').length +
+            document.querySelectorAll('[data-group-static-preview="true"]').length
+        });
+        if (phase === 'settings' && now - phaseStartedAt >= 300) {
+          phase = 'space';
+          phaseStartedAt = now;
+          location.hash = '#/space/default';
+        }
+        if (phase === 'space' && now - phaseStartedAt >= 500) resolve(samples);
+        else requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    })`);
+    const settingsFrames = settingsRouteSamples.filter((sample) => sample.phase === "settings");
+    const spaceReturnFrames = settingsRouteSamples.filter((sample) => sample.phase === "space" && sample.spaceMain);
+    const settingsRouteRoundTrip = {
+      settingsSampleCount: settingsFrames.length,
+      spaceReturnSampleCount: spaceReturnFrames.length,
+      baselineSidebarRowCount: settingsRouteSamples[0]?.baselineRowCount ?? 0,
+      sidebarNodeReplaced: settingsRouteSamples.some((sample) => !sample.sidebarSame),
+      minimumSidebarRowCount: Math.min(...settingsRouteSamples.map((sample) => sample.sidebarRowCount)),
+      settingsReadyObserved: settingsFrames.some((sample) => sample.settingsReady),
+      layoutLoadingObserved: settingsRouteSamples.some((sample) => sample.layoutLoading),
+      cachedSpaceLoadingFrameCount: spaceReturnFrames.filter((sample) => sample.spaceLoading === "true").length,
+      cachedSpaceContentObserved: spaceReturnFrames.some((sample) => sample.visibleGroupCount > 0)
+    };
+
     const geometry = compareGeometry(previewGeometry, settledGeometry);
     const surfaceStyleMismatches = previewSurfaceStyle && settledSurfaceStyle
       ? Object.keys(previewSurfaceStyle).filter((property) => previewSurfaceStyle[property] !== settledSurfaceStyle[property])
@@ -589,6 +637,15 @@ async function main() {
       routeRoundTrip.maxMainLeftDeltaPx <= 1 &&
       routeRoundTrip.maxMainWidthDeltaPx <= 1 &&
       routeRoundTrip.maxSessionBarWidthDeltaPx <= 1 &&
+      settingsRouteRoundTrip.settingsSampleCount > 0 &&
+      settingsRouteRoundTrip.spaceReturnSampleCount > 0 &&
+      settingsRouteRoundTrip.baselineSidebarRowCount > 0 &&
+      !settingsRouteRoundTrip.sidebarNodeReplaced &&
+      settingsRouteRoundTrip.minimumSidebarRowCount === settingsRouteRoundTrip.baselineSidebarRowCount &&
+      settingsRouteRoundTrip.settingsReadyObserved &&
+      !settingsRouteRoundTrip.layoutLoadingObserved &&
+      settingsRouteRoundTrip.cachedSpaceLoadingFrameCount === 0 &&
+      settingsRouteRoundTrip.cachedSpaceContentObserved &&
       performanceStats.pageErrors.length === 0;
 
     const result = {
@@ -606,6 +663,7 @@ async function main() {
         mismatches: surfaceStyleMismatches
       },
       routeRoundTrip,
+      settingsRouteRoundTrip,
       performance: performanceStats,
       screenshots: previewScreenshot && settledScreenshot
         ? { previewScreenshot, bufferedScreenshot: bufferedScreenshot ?? null, settledScreenshot }

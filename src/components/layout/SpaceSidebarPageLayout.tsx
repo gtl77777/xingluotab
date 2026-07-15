@@ -3,7 +3,7 @@ import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { saveAs } from "file-saver";
 import { Circle, X } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { createSpaceBackup, importSingleSpace } from "../../domain/import/backupRepository";
 import { parseTobyExport } from "../../domain/import/toby";
 import type { ValidationIssue } from "../../domain/import/validation";
@@ -53,8 +53,9 @@ type IconDialogState = {
 
 export function SpaceSidebarPageLayout({ children }: SpaceSidebarPageLayoutProps) {
   const { t } = useI18n();
-  const { isSidebarCollapsed: collapsed, setSidebarCollapsed } = useLayoutSettings();
+  const { userSetting, isSidebarCollapsed: collapsed, setSidebarCollapsed } = useLayoutSettings();
   const { revision } = useSpaceVersion();
+  const location = useLocation();
   const navigate = useNavigate();
   const [spaces, setSpaces] = useState<SpaceSummary[]>([]);
   const [createName, setCreateName] = useState<string | null>(null);
@@ -160,9 +161,14 @@ export function SpaceSidebarPageLayout({ children }: SpaceSidebarPageLayoutProps
   async function handleDeleteSpace() {
     if (!deleteTarget) return;
     try {
+      const deletedId = deleteTarget.id;
+      const remainingSpaces = spaces.filter((space) => space.id !== deletedId);
       await deleteSpace(deleteTarget.id);
-      setSpaces((current) => current.filter((space) => space.id !== deleteTarget.id));
+      setSpaces(remainingSpaces);
       setDeleteTarget(null);
+      if (location.pathname === `/space/${deletedId}`) {
+        navigate(remainingSpaces[0] ? `/space/${remainingSpaces[0].id}` : "/about", { replace: true });
+      }
     } catch {
       setStatus(t("common.operationFailed"));
     }
@@ -180,21 +186,26 @@ export function SpaceSidebarPageLayout({ children }: SpaceSidebarPageLayoutProps
     }
   }
 
+  const hideSidebar = location.pathname.startsWith("/space/") && Boolean(userSetting.zenMode);
+
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void handleSpaceDragEnd(event)}>
-      <div className="relative flex h-full min-w-0">
-        <SpaceSidebar
-          spaces={spaces}
-          collapsed={collapsed}
-          dndEnabled
-          onToggleCollapsed={() => void handleToggleCollapsed()}
-          onCreateSpace={() => setCreateName(t("sidebar.newSpace"))}
-          onImportSpace={() => importSpaceInputRef.current?.click()}
-          onImportToby={() => importTobyInputRef.current?.click()}
-          onChangeSpaceIcon={(space) => setIconDialog({ space, icon: normalizeSpaceIconName(space.icon) })}
-          onExportSpace={(space) => void handleExportSpace(space)}
-          onDeleteSpace={setDeleteTarget}
-        />
+      <div data-space-sidebar-layout="true" className="relative flex h-full min-w-0">
+        {hideSidebar ? null : (
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void handleSpaceDragEnd(event)}>
+            <SpaceSidebar
+              spaces={spaces}
+              collapsed={collapsed}
+              dndEnabled
+              onToggleCollapsed={() => void handleToggleCollapsed()}
+              onCreateSpace={() => setCreateName(t("sidebar.newSpace"))}
+              onImportSpace={() => importSpaceInputRef.current?.click()}
+              onImportToby={() => importTobyInputRef.current?.click()}
+              onChangeSpaceIcon={(space) => setIconDialog({ space, icon: normalizeSpaceIconName(space.icon) })}
+              onExportSpace={(space) => void handleExportSpace(space)}
+              onDeleteSpace={setDeleteTarget}
+            />
+          </DndContext>
+        )}
         <input
           ref={importSpaceInputRef}
           type="file"
@@ -292,7 +303,6 @@ export function SpaceSidebarPageLayout({ children }: SpaceSidebarPageLayoutProps
           </AlertDialogContent>
         </AlertDialog>
       </div>
-    </DndContext>
   );
 }
 

@@ -2,20 +2,11 @@ import { DatabaseBackup, Home, Info, PanelLeftClose, PanelLeftOpen, Search, Sett
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router";
-import {
-  getUserSetting,
-  USER_SETTING_STORAGE_KEY
-} from "../../domain/settings/repository";
 import { Button } from "../ui/button";
 import { SearchDialog } from "../../features/search/SearchDialog";
 import { useI18n } from "../../features/i18n/useI18n";
-import {
-  applyAccentTheme,
-  type AccentTheme,
-  type DarkVisualTheme,
-  type LightVisualTheme
-} from "../../features/settings/appearance";
-import { watchDocumentAppearance, type ThemeMode } from "../../features/settings/theme";
+import { applyAccentTheme } from "../../features/settings/appearance";
+import { watchDocumentAppearance } from "../../features/settings/theme";
 import { BrandMark } from "../brand/BrandMark";
 import { useLayoutSettings } from "../../features/settings/LayoutSettingsProvider";
 
@@ -32,13 +23,13 @@ const navItems = [
 
 export function AppShell({ children }: AppShellProps) {
   const { t } = useI18n();
-  const { isSidebarCollapsed: sidebarCollapsed, setSidebarCollapsed } = useLayoutSettings();
+  const {
+    userSetting,
+    isSidebarCollapsed: sidebarCollapsed,
+    setSidebarCollapsed
+  } = useLayoutSettings();
   const location = useLocation();
   const [searchOpen, setSearchOpen] = useState(false);
-  const [theme, setTheme] = useState<ThemeMode>("light");
-  const [accentTheme, setAccentTheme] = useState<AccentTheme>("pink");
-  const [lightVisualTheme, setLightVisualTheme] = useState<LightVisualTheme>("professional");
-  const [darkVisualTheme, setDarkVisualTheme] = useState<DarkVisualTheme>("professional");
   const useSpaceNativeSidebar =
     location.pathname === "/" ||
     location.pathname.startsWith("/space") ||
@@ -63,44 +54,15 @@ export function AppShell({ children }: AppShellProps) {
     return () => window.removeEventListener("xingluotab:open-search", listener);
   }, []);
 
-  useEffect(() => {
-    void getUserSetting().then((setting) => {
-      setTheme(setting.theme ?? "light");
-      setAccentTheme(setting.accentTheme ?? "pink");
-      setLightVisualTheme(setting.lightVisualTheme ?? "professional");
-      setDarkVisualTheme(setting.darkVisualTheme ?? "professional");
-    });
-
-    const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
-      const storedSetting = changes[USER_SETTING_STORAGE_KEY]?.newValue;
-      if (areaName !== "local" || !storedSetting) return;
-      try {
-        const setting = JSON.parse(storedSetting as string) as {
-          theme?: "light" | "dark" | "system";
-          accentTheme?: AccentTheme;
-          lightVisualTheme?: LightVisualTheme;
-          darkVisualTheme?: DarkVisualTheme;
-        };
-        setTheme(setting.theme ?? "light");
-        setAccentTheme(setting.accentTheme ?? "pink");
-        setLightVisualTheme(setting.lightVisualTheme ?? "professional");
-        setDarkVisualTheme(setting.darkVisualTheme ?? "professional");
-      } catch {
-        setTheme("light");
-        setAccentTheme("pink");
-        setLightVisualTheme("professional");
-        setDarkVisualTheme("professional");
-      }
-    };
-    chrome.storage.onChanged.addListener(listener);
-    return () => chrome.storage.onChanged.removeListener(listener);
-  }, []);
-
   useEffect(
-    () => watchDocumentAppearance(theme, lightVisualTheme, darkVisualTheme),
-    [darkVisualTheme, lightVisualTheme, theme]
+    () => watchDocumentAppearance(
+      userSetting.theme,
+      userSetting.lightVisualTheme,
+      userSetting.darkVisualTheme
+    ),
+    [userSetting.darkVisualTheme, userSetting.lightVisualTheme, userSetting.theme]
   );
-  useEffect(() => void applyAccentTheme(accentTheme), [accentTheme]);
+  useEffect(() => void applyAccentTheme(userSetting.accentTheme), [userSetting.accentTheme]);
 
   async function handleToggleSidebar() {
     const nextCollapsed = !sidebarCollapsed;

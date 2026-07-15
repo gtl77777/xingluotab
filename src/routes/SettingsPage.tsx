@@ -1,5 +1,5 @@
 import { Check, ExternalLink, ImagePlus, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "../components/ui/button";
 import { BrandMark } from "../components/brand/BrandMark";
 import {
@@ -9,7 +9,6 @@ import {
   SelectTrigger,
   SelectValue
 } from "../components/ui/select";
-import { getUserSetting, saveUserSetting } from "../domain/settings/repository";
 import type { UserSetting } from "../domain/settings/schema";
 import { languageOptions } from "../features/i18n/messages";
 import { useI18n } from "../features/i18n/useI18n";
@@ -17,15 +16,13 @@ import {
   ACCENT_THEMES,
   DARK_VISUAL_THEMES,
   LIGHT_VISUAL_THEMES,
-  applyAccentTheme,
-  applyVisualTheme,
   createLogoDataUrl,
   type AccentTheme,
   type DarkVisualTheme,
   type LightVisualTheme,
   type VisualTheme
 } from "../features/settings/appearance";
-import { applyDocumentTheme } from "../features/settings/theme";
+import { useLayoutSettings } from "../features/settings/LayoutSettingsProvider";
 import { openUrl } from "../platform/browser";
 
 type SaveState = {
@@ -39,43 +36,15 @@ type SettingOption = {
 };
 
 export function SettingsPage() {
-  const [userSetting, setUserSetting] = useState<UserSetting | null>(null);
-  const { t } = useI18n(userSetting?.language);
+  const { userSetting, replaceUserSetting } = useLayoutSettings();
+  const { t } = useI18n(userSetting.language);
   const [saveState, setSaveState] = useState<SaveState | null>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    let mounted = true;
-
-    void getUserSetting()
-      .then((setting) => {
-        if (!mounted) return;
-        setUserSetting(setting);
-        setSaveState(null);
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setSaveState({
-          tone: "error",
-          message: t("settings.loadError")
-        });
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
   function commitUserSetting(nextSetting: UserSetting) {
-    setUserSetting(nextSetting);
     setSaveState(null);
 
-    void saveUserSetting(nextSetting)
-      .then(() => {
-        const resolvedMode = applyDocumentTheme(nextSetting.theme);
-        applyAccentTheme(nextSetting.accentTheme);
-        applyVisualTheme(resolvedMode, nextSetting.lightVisualTheme, nextSetting.darkVisualTheme);
-      })
+    void replaceUserSetting(nextSetting)
       .catch(() => {
         setSaveState({
           tone: "error",
@@ -85,14 +54,13 @@ export function SettingsPage() {
   }
 
   function updateUserSetting(patch: Partial<UserSetting>) {
-    if (!userSetting) return;
     commitUserSetting({ ...userSetting, ...patch });
   }
 
-  const disabled = !userSetting;
+  const disabled = false;
 
   return (
-    <div className="h-full overflow-y-auto p-4 pb-6">
+    <div data-settings-page="true" data-settings-ready="true" className="h-full overflow-y-auto p-4 pb-6">
       <div className="mb-4 flex items-center">
         <h1 className="text-xl font-semibold">{t("settings.title")}</h1>
         <Button asChild variant="outline" className="ml-4 h-8">

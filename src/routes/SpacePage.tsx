@@ -1,6 +1,5 @@
 import {
   ChevronDown,
-  Circle,
   Edit3,
   ExternalLink,
   FolderOpen,
@@ -44,7 +43,6 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { saveAs } from "file-saver";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import {
@@ -57,7 +55,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle
 } from "../components/ui/alert-dialog";
-import { SpaceSidebar } from "../components/layout/SpaceSidebar";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Favicon, FaviconPreview, preloadFavicons } from "../components/ui/Favicon";
@@ -74,9 +71,6 @@ import {
 import { Input } from "../components/ui/input";
 import { isSafeNavigationUrl } from "../lib/safeUrl";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { createSpaceBackup, importSingleSpace } from "../domain/import/backupRepository";
-import { parseTobyExport } from "../domain/import/toby";
-import type { ValidationIssue } from "../domain/import/validation";
 import { getUserSetting, saveLastVisitedSpaceId, saveUserSetting } from "../domain/settings/repository";
 import {
   addGroup,
@@ -95,15 +89,12 @@ import {
 } from "../domain/space/operations";
 import type { RecordTab, SessionTab, Space, SpaceSummary, TabGroup } from "../domain/space/schema";
 import {
-  createSpace,
-  deleteSpace,
   getSpace,
   getSpaceList,
   renameSpace,
   reorderSpace,
   saveSpace,
-  saveSpaceTransfer,
-  updateSpaceIcon
+  saveSpaceTransfer
 } from "../domain/space/repository";
 import { searchTabs, buildSearchIndex, type SearchRecord } from "../features/search/searchIndex";
 import {
@@ -126,13 +117,7 @@ import {
   type ZenTheme
 } from "../features/settings/appearance";
 import { useLayoutSettings } from "../features/settings/LayoutSettingsProvider";
-import {
-  isKnownSpaceIcon,
-  normalizeSpaceIconName,
-  SPACE_ICON_NAMES,
-  SpaceIcon,
-  type SpaceIconName
-} from "../features/space/spaceIcons";
+import { SpaceIcon } from "../features/space/spaceIcons";
 import { useSpaceVersion } from "../features/storage/spaceVersionStore";
 import { SessionBar } from "../features/tabs/SessionBar";
 import { getCurrentWindowSessionTabs, tabToSessionTab } from "../features/tabs/sessionTabs";
@@ -153,14 +138,9 @@ type SpaceState = {
   action: string | null;
 };
 
-type SpaceNameDialogState =
-  | { mode: "create"; name: string }
-  | { mode: "rename"; space: SpaceSummary; name: string }
-  | null;
-
-type SpaceIconDialogState = {
+type SpaceNameDialogState = {
   space: SpaceSummary;
-  icon?: SpaceIconName;
+  name: string;
 } | null;
 
 type GroupNameDialogState = {
@@ -209,6 +189,9 @@ const defaultState: SpaceState = {
   action: null
 };
 
+const spaceStateCache = new Map<string, SpaceState>();
+let sessionTabsCache: SessionTab[] = [];
+
 const CARD_GRID_VIRTUALIZATION_THRESHOLD = 60;
 const GROUP_CHROME_HEIGHT = 64;
 const DND_SCROLL_SETTLE_MS = 180;
@@ -242,36 +225,43 @@ function scrollGroupContentByWheel(scroller: HTMLDivElement, deltaY: number, del
 export function SpacePage({ missing }: SpacePageProps) {
   const { t } = useI18n();
   const {
-    isSidebarCollapsed: isSpaceSidebarCollapsed,
+    userSetting,
     isSessionBarCollapsed,
-    setSidebarCollapsed: setSpaceSidebarCollapsed,
-    setSessionBarCollapsed
+    setSessionBarCollapsed,
+    updateUserSetting
   } = useLayoutSettings();
   const { revision } = useSpaceVersion();
   const { id } = useParams();
   const navigate = useNavigate();
-  const [state, setState] = useState(defaultState);
+  const requestedSpaceId = missing ? "default" : id ?? "default";
+  const [state, setState] = useState<SpaceState>(() => {
+    const cached = spaceStateCache.get(requestedSpaceId);
+    return cached ? { ...cached, loading: false, error: null, action: null } : { ...defaultState };
+  });
   const [query, setQuery] = useState("");
-  const [sessionTabs, setSessionTabs] = useState<SessionTab[]>([]);
-  const [sessionTabSort, setSessionTabSort] = useState<"asc" | "desc">("desc");
-  const [collapsedGroupIds, setCollapsedGroupIds] = useState<string[]>([]);
+  const [sessionTabs, setSessionTabs] = useState<SessionTab[]>(() =>
+    userSetting.showPinnedSessionTab === "always"
+      ? sessionTabsCache
+      : sessionTabsCache.filter((tab) => !tab.pinned)
+  );
+  const [sessionTabSort, setSessionTabSort] = useState<"asc" | "desc">(userSetting.sessionTabSort ?? "desc");
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<string[]>(userSetting.collapsedGroups);
   const [isGroupLayoutAnimating, setGroupLayoutAnimating] = useState(false);
-  const [collectionView, setCollectionView] = useState<CollectionView>("card");
-  const [estimatedGroupColumns, setEstimatedGroupColumns] = useState(VIEW_METRICS.card.estimatedColumns);
-  const [collectionSort, setCollectionSort] = useState<CollectionSort>("manual");
+  const [collectionView, setCollectionView] = useState<CollectionView>(userSetting.collectionView ?? "card");
+  const [estimatedGroupColumns, setEstimatedGroupColumns] = useState(
+    VIEW_METRICS[userSetting.collectionView ?? "card"].estimatedColumns
+  );
+  const [collectionSort, setCollectionSort] = useState<CollectionSort>(userSetting.collectionSort ?? "manual");
   const [activeTag, setActiveTag] = useState<string | null>(null);
-  const [isZenMode, setZenMode] = useState(false);
-  const [zenTheme, setZenTheme] = useState<ZenTheme>("minimal");
+  const [isZenMode, setZenMode] = useState(userSetting.zenMode ?? false);
+  const [zenTheme, setZenTheme] = useState<ZenTheme>(userSetting.zenTheme ?? "minimal");
   const [spaceNameDialog, setSpaceNameDialog] = useState<SpaceNameDialogState>(null);
-  const [spaceIconDialog, setSpaceIconDialog] = useState<SpaceIconDialogState>(null);
   const [groupNameDialog, setGroupNameDialog] = useState<GroupNameDialogState>(null);
   const [groupTagsDialog, setGroupTagsDialog] = useState<GroupTagsDialogState>(null);
   const [tabEditDialog, setTabEditDialog] = useState<TabEditDialogState>(null);
   const [tabMoveDialog, setTabMoveDialog] = useState<TabMoveDialogState>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const [activeDrag, setActiveDrag] = useState<XingLuoTabDragData | null>(null);
-  const importSpaceInputRef = useRef<HTMLInputElement>(null);
-  const importTobyInputRef = useRef<HTMLInputElement>(null);
   const groupScrollRef = useRef<HTMLDivElement>(null);
   const activeDragRef = useRef<XingLuoTabDragData | null>(null);
   const dragOriginSpaceRef = useRef<Space | null>(null);
@@ -283,7 +273,7 @@ export function SpacePage({ missing }: SpacePageProps) {
   const suppressNextSpaceVersionRefreshRef = useRef(false);
   const lastLoadedRevisionRef = useRef(revision);
   const sessionTabsRequestRef = useRef(0);
-  const includePinnedSessionTabsRef = useRef(true);
+  const includePinnedSessionTabsRef = useRef(userSetting.showPinnedSessionTab === "always");
   const groupLayoutAnimationTimerRef = useRef<number | null>(null);
   const dndScrollSettleTimerRef = useRef<number | null>(null);
   const dndEdgeScrollFrameRef = useRef<number | null>(null);
@@ -293,7 +283,7 @@ export function SpacePage({ missing }: SpacePageProps) {
   const dndEdgeScrollEnteredAtRef = useRef<number | null>(null);
   const dndEdgeScrollLastPointerRef = useRef<{ x: number; y: number } | null>(null);
   const dndPointerRef = useRef<{ x: number; y: number } | null>(null);
-  const collapsedGroupIdsRef = useRef<string[]>([]);
+  const collapsedGroupIdsRef = useRef<string[]>(userSetting.collapsedGroups);
   const collapsedGroupsPersistenceRef = useRef<Promise<void>>(Promise.resolve());
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -301,6 +291,16 @@ export function SpacePage({ missing }: SpacePageProps) {
     }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
+
+  useEffect(() => {
+    if (!state.loading && state.space) {
+      spaceStateCache.set(state.space.id, { ...state, action: null });
+    }
+  }, [state]);
+
+  useEffect(() => {
+    sessionTabsCache = sessionTabs;
+  }, [sessionTabs]);
 
   useEffect(() => () => {
     if (groupLayoutAnimationTimerRef.current != null) {
@@ -397,24 +397,19 @@ export function SpacePage({ missing }: SpacePageProps) {
     }
   }, []);
 
-  const loadPageSettings = useCallback(async () => {
-    try {
-      const setting = await getUserSetting();
-      includePinnedSessionTabsRef.current = setting.showPinnedSessionTab === "always";
-      setSessionTabSort(setting.sessionTabSort || "desc");
-      collapsedGroupIdsRef.current = setting.collapsedGroups;
-      setCollapsedGroupIds(setting.collapsedGroups);
-      setCollectionView(setting.collectionView ?? "card");
-      setCollectionSort(setting.collectionSort ?? "manual");
-      setZenMode(setting.zenMode ?? false);
-      setZenTheme(setting.zenTheme ?? "minimal");
-      if (!includePinnedSessionTabsRef.current) {
-        setSessionTabs((current) => current.filter((tab) => !tab.pinned));
-      }
-    } catch {
-      // Keep defaults and the already visible Current tabs list.
+  const loadPageSettings = useCallback(() => {
+    includePinnedSessionTabsRef.current = userSetting.showPinnedSessionTab === "always";
+    setSessionTabSort(userSetting.sessionTabSort ?? "desc");
+    collapsedGroupIdsRef.current = userSetting.collapsedGroups;
+    setCollapsedGroupIds(userSetting.collapsedGroups);
+    setCollectionView(userSetting.collectionView ?? "card");
+    setCollectionSort(userSetting.collectionSort ?? "manual");
+    setZenMode(userSetting.zenMode ?? false);
+    setZenTheme(userSetting.zenTheme ?? "minimal");
+    if (!includePinnedSessionTabsRef.current) {
+      setSessionTabs((current) => current.filter((tab) => !tab.pinned));
     }
-  }, []);
+  }, [userSetting]);
 
   const updateSessionTabFromBrowser = useCallback((tabId: number, browserTab: chrome.tabs.Tab) => {
     setSessionTabs((current) =>
@@ -842,10 +837,6 @@ export function SpacePage({ missing }: SpacePageProps) {
     }
   }
 
-  function handleCreateSpace() {
-    setSpaceNameDialog({ mode: "create", name: t("sidebar.newSpace") });
-  }
-
   async function handleSubmitSpaceNameDialog(event: FormEvent) {
     event.preventDefault();
     if (!spaceNameDialog) return;
@@ -854,37 +845,19 @@ export function SpacePage({ missing }: SpacePageProps) {
     if (!name) return;
     setSpaceNameDialog(null);
 
-    if (spaceNameDialog.mode === "rename") {
-      if (name === spaceNameDialog.space.name) return;
-      try {
-        const result = await renameSpace(spaceNameDialog.space.id, name);
-
-        setState((current) => ({
-          ...current,
-          list: result.list,
-          space:
-            current.space?.id === spaceNameDialog.space.id
-              ? result.space ?? { ...current.space, name }
-              : current.space,
-          action: t("space.updated")
-        }));
-      } catch (error) {
-        setState((current) => ({
-          ...current,
-          action: t("common.operationFailed")
-        }));
-      }
-      return;
-    }
-
-    setState((current) => ({ ...current, action: t("common.saving") }));
+    if (name === spaceNameDialog.space.name) return;
     try {
-      const summary = await createSpace(name);
+      const result = await renameSpace(spaceNameDialog.space.id, name);
+
       setState((current) => ({
         ...current,
-        list: [...current.list, summary]
+        list: result.list,
+        space:
+          current.space?.id === spaceNameDialog.space.id
+            ? result.space ?? { ...current.space, name }
+            : current.space,
+        action: t("space.updated")
       }));
-      navigate(`/space/${summary.id}`);
     } catch (error) {
       setState((current) => ({
         ...current,
@@ -894,135 +867,7 @@ export function SpacePage({ missing }: SpacePageProps) {
   }
 
   function handleRenameSpace(space: SpaceSummary) {
-    setSpaceNameDialog({ mode: "rename", space, name: space.name });
-  }
-
-  function handleChangeSpaceIcon(space: SpaceSummary) {
-    setSpaceIconDialog({
-      space,
-      icon: normalizeSpaceIconName(space.icon)
-    });
-  }
-
-  async function handleSubmitSpaceIconDialog(event: FormEvent) {
-    event.preventDefault();
-    if (!spaceIconDialog) return;
-
-    const nextList = await updateSpaceIcon(spaceIconDialog.space.id, spaceIconDialog.icon);
-    setSpaceIconDialog(null);
-    setState((current) => ({
-      ...current,
-      list: nextList,
-      action: t("space.updated")
-    }));
-  }
-
-  async function handleExportSpace(space: SpaceSummary) {
-    try {
-      const storedSpace = await getSpace(space.id);
-      if (!storedSpace) {
-        setState((current) => ({ ...current, action: t("space.notFound") }));
-        return;
-      }
-
-      const blob = new Blob([JSON.stringify(createSpaceBackup(storedSpace), null, 2)], {
-        type: "application/json;charset=utf-8"
-      });
-      saveAs(blob, `${toSafeFileName(storedSpace.name)}_xingluotab-space.json`);
-      setState((current) => ({ ...current, action: t("space.exported") }));
-    } catch (error) {
-      setState((current) => ({
-        ...current,
-        action: t("common.operationFailed")
-      }));
-    }
-  }
-
-  async function handleImportSpace(file: File | undefined) {
-    if (!file) return;
-
-    try {
-      const result = await importSingleSpace(await readJsonFile(file));
-      if (!result.ok) {
-        setState((current) => ({ ...current, action: formatIssues(result.issues, t) }));
-        return;
-      }
-
-      setState((current) => ({
-        ...current,
-        list: [...current.list, result.value.summary],
-        action: t("sync.importedSpace", { name: result.value.summary.name })
-      }));
-      navigate(`/space/${result.value.summary.id}`);
-    } catch (error) {
-      setState((current) => ({
-        ...current,
-        action: error instanceof SyntaxError ? t("common.invalidJson") : t("common.operationFailed")
-      }));
-    } finally {
-      if (importSpaceInputRef.current) importSpaceInputRef.current.value = "";
-    }
-  }
-
-  async function handleImportToby(file: File | undefined) {
-    if (!file) return;
-
-    try {
-      const tobySpace = parseTobyExport(await file.text());
-      const result = await importSingleSpace(createSpaceBackup(tobySpace));
-      if (!result.ok) {
-        setState((current) => ({ ...current, action: formatIssues(result.issues, t) }));
-        return;
-      }
-
-      setState((current) => ({
-        ...current,
-        list: [...current.list, result.value.summary],
-        action: t("space.importedToby")
-      }));
-      navigate(`/space/${result.value.summary.id}`);
-    } catch (error) {
-      setState((current) => ({
-        ...current,
-        action: t("common.operationFailed")
-      }));
-    } finally {
-      if (importTobyInputRef.current) importTobyInputRef.current.value = "";
-    }
-  }
-
-  function handleDeleteSpace(space: SpaceSummary) {
-    setConfirmDialog({
-      title: t("space.deleteSpace"),
-      description: t("space.deleteWarning"),
-      confirmText: t("common.delete"),
-      onConfirm: async () => {
-        await deleteSpaceWithState(space);
-      }
-    });
-  }
-
-  async function deleteSpaceWithState(space: SpaceSummary) {
-    try {
-      await deleteSpace(space.id);
-      const nextList = state.list.filter((item) => item.id !== space.id);
-      setState((current) => ({
-        ...current,
-        list: nextList,
-        space: current.space?.id === space.id ? null : current.space,
-        action: t("space.deleted")
-      }));
-
-      if (state.space?.id === space.id) {
-        const nextSpace = nextList[0];
-        navigate(nextSpace ? `/space/${nextSpace.id}` : "/about");
-      }
-    } catch (error) {
-      setState((current) => ({
-        ...current,
-        action: t("common.operationFailed")
-      }));
-    }
+    setSpaceNameDialog({ space, name: space.name });
   }
 
   function handleGroupContentScroll() {
@@ -1467,11 +1312,6 @@ export function SpacePage({ missing }: SpacePageProps) {
     await setSessionBarCollapsed(nextCollapsed);
   }
 
-  async function handleToggleSpaceSidebarCollapsed() {
-    const nextCollapsed = !isSpaceSidebarCollapsed;
-    await setSpaceSidebarCollapsed(nextCollapsed);
-  }
-
   async function handleToggleSessionTabSort() {
     const setting = await getUserSetting();
     const nextSort = sessionTabSort === "asc" ? "desc" : "asc";
@@ -1565,16 +1405,18 @@ export function SpacePage({ missing }: SpacePageProps) {
   }
 
   async function handleSetZenMode(enabled: boolean) {
-    const setting = await getUserSetting();
-    await saveUserSetting({ ...setting, zenMode: enabled });
     setZenMode(enabled);
     setActiveTag(null);
+    await updateUserSetting({ zenMode: enabled }).catch(() => {
+      setZenMode(userSetting.zenMode ?? false);
+    });
   }
 
   async function handleSetZenTheme(theme: ZenTheme) {
-    const setting = await getUserSetting();
-    await saveUserSetting({ ...setting, zenTheme: theme });
     setZenTheme(theme);
+    await updateUserSetting({ zenTheme: theme }).catch(() => {
+      setZenTheme(userSetting.zenTheme ?? "minimal");
+    });
   }
 
   async function handleSubmitGroupTags(event: FormEvent) {
@@ -1713,34 +1555,11 @@ export function SpacePage({ missing }: SpacePageProps) {
           isZenMode ? `zen-surface ${ZEN_THEME_CLASSES[zenTheme]} min-h-screen w-full` : ""
         ].join(" ")}
       >
-      {isZenMode ? null : <SpaceSidebar
-        spaces={state.list}
-        collapsed={isSpaceSidebarCollapsed}
-        dndEnabled
-        onToggleCollapsed={() => void handleToggleSpaceSidebarCollapsed()}
-        onCreateSpace={() => void handleCreateSpace()}
-        onImportSpace={() => importSpaceInputRef.current?.click()}
-        onImportToby={() => importTobyInputRef.current?.click()}
-        onChangeSpaceIcon={(space) => void handleChangeSpaceIcon(space)}
-        onExportSpace={(space) => void handleExportSpace(space)}
-        onDeleteSpace={(space) => void handleDeleteSpace(space)}
-      />}
-      <input
-        ref={importSpaceInputRef}
-        type="file"
-        accept="application/json,.json"
-        className="hidden"
-        onChange={(event) => void handleImportSpace(event.currentTarget.files?.[0])}
-      />
-      <input
-        ref={importTobyInputRef}
-        type="file"
-        accept="application/json,.json"
-        className="hidden"
-        onChange={(event) => void handleImportToby(event.currentTarget.files?.[0])}
-      />
-
-      <section data-space-main="true" className="relative flex min-w-0 flex-1 flex-col">
+      <section
+        data-space-main="true"
+        data-space-loading={state.loading}
+        className="relative flex min-w-0 flex-1 flex-col"
+      >
         {isZenMode ? (
           <div className="group/zen-exit fixed right-0 top-0 z-40 flex h-24 w-32 items-start justify-end p-4">
             <div
@@ -2164,7 +1983,7 @@ export function SpacePage({ missing }: SpacePageProps) {
       <Dialog open={spaceNameDialog != null} onOpenChange={(open) => !open && setSpaceNameDialog(null)}>
         <DialogContent closeLabel={t("common.close")}>
           <DialogHeader>
-            <DialogTitle>{spaceNameDialog?.mode === "rename" ? t("space.rename") : t("space.create")}</DialogTitle>
+            <DialogTitle>{t("space.rename")}</DialogTitle>
             <DialogDescription>{t("space.enterName")}</DialogDescription>
           </DialogHeader>
           <form className="grid gap-4" onSubmit={(event) => void handleSubmitSpaceNameDialog(event)}>
@@ -2181,63 +2000,6 @@ export function SpacePage({ missing }: SpacePageProps) {
             </label>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setSpaceNameDialog(null)}>
-                {t("common.cancel")}
-              </Button>
-              <Button type="submit">{spaceNameDialog?.mode === "rename" ? t("common.save") : t("common.create")}</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={spaceIconDialog != null} onOpenChange={(open) => !open && setSpaceIconDialog(null)}>
-        <DialogContent closeLabel={t("common.close")} className="w-[min(92vw,50rem)] max-w-[800px]">
-          <DialogHeader>
-            <DialogTitle>{t("space.changeIcon")}</DialogTitle>
-            <DialogDescription>{t("space.chooseIcon")}</DialogDescription>
-          </DialogHeader>
-          <form className="grid gap-4" onSubmit={(event) => void handleSubmitSpaceIconDialog(event)}>
-            <div
-              data-icon-grid="true"
-              className="grid max-h-[400px] grid-cols-[repeat(auto-fill,minmax(3rem,1fr))] gap-4 overflow-y-auto p-4 sm:grid-cols-8"
-            >
-              <button
-                type="button"
-                data-icon-name="None"
-                title={t("space.noIcon")}
-                className={[
-                  "flex h-12 w-12 items-center justify-center justify-self-center rounded-lg border-2",
-                  spaceIconDialog?.icon == null ? "border-green-500 bg-green-50 text-green-600" : "border-transparent hover:bg-muted"
-                ].join(" ")}
-                onClick={() => setSpaceIconDialog((current) => (current ? { ...current, icon: undefined } : current))}
-              >
-                <Circle className="h-4 w-4" />
-                <span className="sr-only">{t("space.noIcon")}</span>
-              </button>
-              {SPACE_ICON_NAMES.map((name) => (
-                <button
-                  key={name}
-                  type="button"
-                  data-icon-name={name}
-                  title={name}
-                  className={[
-                    "flex h-12 w-12 items-center justify-center justify-self-center rounded-lg border-2",
-                    spaceIconDialog?.icon === name
-                      ? "border-green-500 bg-green-50 text-green-600"
-                      : "border-transparent hover:bg-muted"
-                  ].join(" ")}
-                  onClick={() =>
-                    setSpaceIconDialog((current) =>
-                      current && isKnownSpaceIcon(name) ? { ...current, icon: name } : current
-                    )
-                  }
-                >
-                  <SpaceIcon name={name} className="h-4 w-4" />
-                  <span className="sr-only">{name}</span>
-                </button>
-              ))}
-            </div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setSpaceIconDialog(null)}>
                 {t("common.cancel")}
               </Button>
               <Button type="submit">{t("common.save")}</Button>
@@ -3280,24 +3042,6 @@ function SearchResults({
       ))}
     </div>
   );
-}
-
-async function readJsonFile(file: File) {
-  return JSON.parse(await file.text()) as unknown;
-}
-
-function formatIssues(issues: ValidationIssue[], t: Translate) {
-  if (issues.length === 0) return t("common.validationFailed");
-
-  const details = issues
-    .slice(0, 3)
-    .map((issue) => `${issue.path}: ${issue.code}`)
-    .join("; ");
-  return `${t("common.validationFailed")}: ${details}`;
-}
-
-function toSafeFileName(name: string) {
-  return name.trim().replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_") || "space";
 }
 
 function getUrlHost(url: string) {

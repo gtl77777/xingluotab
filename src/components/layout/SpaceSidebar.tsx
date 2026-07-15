@@ -11,11 +11,11 @@ import {
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { NavLink, useLocation, useNavigate } from "react-router";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import type { SpaceSummary } from "../../domain/space/schema";
-import { getUserSetting, USER_SETTING_STORAGE_KEY } from "../../domain/settings/repository";
 import { dndId, type SpaceDragData } from "../../features/dnd/dragData";
 import { useI18n } from "../../features/i18n/useI18n";
+import { useLayoutSettings } from "../../features/settings/LayoutSettingsProvider";
 import { getAdjacentSpaceId, getSpaceNavigationDirection } from "../../features/space/navigation";
 import { SpaceIcon } from "../../features/space/spaceIcons";
 import { Button } from "../ui/button";
@@ -53,25 +53,9 @@ export function SpaceSidebar({
   dndEnabled = false
 }: SpaceSidebarProps) {
   const { t } = useI18n();
+  const { userSetting } = useLayoutSettings();
   const location = useLocation();
   const navigate = useNavigate();
-  const [logoDataUrl, setLogoDataUrl] = useState<string | undefined>();
-
-  useEffect(() => {
-    void getUserSetting().then((setting) => setLogoDataUrl(setting.logoDataUrl));
-    const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
-      const storedSetting = changes[USER_SETTING_STORAGE_KEY]?.newValue;
-      if (areaName !== "local" || !storedSetting) return;
-      try {
-        const setting = JSON.parse(storedSetting as string) as { logoDataUrl?: string };
-        setLogoDataUrl(setting.logoDataUrl);
-      } catch {
-        setLogoDataUrl(undefined);
-      }
-    };
-    chrome.storage.onChanged.addListener(listener);
-    return () => chrome.storage.onChanged.removeListener(listener);
-  }, []);
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -103,8 +87,8 @@ export function SpaceSidebar({
         <div className="min-w-0 flex-1 overflow-hidden transition-all duration-200">
           {collapsed ? null : (
             <div className="flex items-center gap-2 whitespace-nowrap px-2 text-lg font-semibold">
-              {logoDataUrl ? (
-                <img data-brand-logo="true" src={logoDataUrl} alt="" className="h-7 w-7 rounded-lg object-cover" />
+              {userSetting.logoDataUrl ? (
+                <img data-brand-logo="true" src={userSetting.logoDataUrl} alt="" className="h-7 w-7 rounded-lg object-cover" />
               ) : (
                 <BrandMark className="h-7 w-7 rounded-lg" />
               )}
