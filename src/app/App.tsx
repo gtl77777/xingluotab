@@ -2,6 +2,7 @@ import { HashRouter, Navigate, Route, Routes } from "react-router";
 import { useEffect, useState } from "react";
 import { AppShell } from "../components/layout/AppShell";
 import { SpaceSidebarPageLayout } from "../components/layout/SpaceSidebarPageLayout";
+import { Toaster } from "../components/ui/sonner";
 import { getUserSetting } from "../domain/settings/repository";
 import { getSpaceList } from "../domain/space/repository";
 import { SpaceVersionProvider, useSpaceVersion } from "../features/storage/spaceVersionStore";
@@ -28,6 +29,7 @@ export function App() {
               </Routes>
             </SpaceSidebarPageLayout>
           </AppShell>
+          <Toaster />
         </HashRouter>
       </LayoutSettingsProvider>
     </SpaceVersionProvider>

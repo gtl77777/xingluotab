@@ -110,7 +110,11 @@ const defaultSpaceVersionStore = createSpaceVersionStore({
   sendRuntimeMessage: (message) => chrome.runtime.sendMessage(message)
 });
 
-const SpaceVersionContext = createContext<SpaceVersionSnapshot | null>(null);
+type SpaceVersionContextValue = SpaceVersionSnapshot & {
+  refresh: () => Promise<void>;
+};
+
+const SpaceVersionContext = createContext<SpaceVersionContextValue | null>(null);
 
 export function SpaceVersionProvider({ children }: { children: ReactNode }) {
   const snapshot = useSyncExternalStore(
@@ -118,7 +122,11 @@ export function SpaceVersionProvider({ children }: { children: ReactNode }) {
     defaultSpaceVersionStore.getSnapshot,
     defaultSpaceVersionStore.getSnapshot
   );
-  return <SpaceVersionContext.Provider value={snapshot}>{children}</SpaceVersionContext.Provider>;
+  return (
+    <SpaceVersionContext.Provider value={{ ...snapshot, refresh: defaultSpaceVersionStore.refresh }}>
+      {children}
+    </SpaceVersionContext.Provider>
+  );
 }
 
 export function useSpaceVersion() {

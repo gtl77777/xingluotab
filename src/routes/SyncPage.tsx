@@ -1,7 +1,8 @@
-import { Download, ExternalLink, Eye, EyeOff, LoaderCircle, Upload, X } from "lucide-react";
+import { Download, ExternalLink, Eye, EyeOff, LoaderCircle, Upload } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
+import { toast, type ExternalToast } from "sonner";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,10 +39,9 @@ type ActiveSync = {
 
 export function SyncPage() {
   const { t } = useI18n();
-  const { version: spaceVersion } = useSpaceVersion();
+  const { version: spaceVersion, refresh: refreshSpaceVersion } = useSpaceVersion();
   const navigate = useNavigate();
   const [setting, setSetting] = useState<SyncSetting | null>(null);
-  const [status, setStatus] = useState<RemoteSyncResult | null>(null);
   const [activeSync, setActiveSync] = useState<ActiveSync>(null);
   const [pendingConflict, setPendingConflict] = useState<PendingConflict>(null);
   const [showGithubToken, setShowGithubToken] = useState(false);
@@ -56,10 +56,7 @@ export function SyncPage() {
       })
       .catch(() => {
         if (!mounted) return;
-        setStatus({
-          status: "error",
-          message: t("sync.loadError")
-        });
+        toast.error(t("sync.loadError"));
       });
     return () => {
       mounted = false;
@@ -69,28 +66,26 @@ export function SyncPage() {
   function updateSetting(resolve: (current: SyncSetting) => SyncSetting) {
     if (!setting) return;
     const nextSetting = resolve(setting);
-    setStatus(null);
     setPendingConflict(null);
     setSetting(nextSetting);
     void saveSyncSetting(nextSetting).catch(() => {
-      setStatus({
-        status: "error",
-        message: t("sync.saveError")
-      });
+      toast.error(t("sync.saveError"));
     });
   }
 
   async function handleRemoteSync(providerMode: ProviderMode, mode: "push" | "pull" | "auto") {
-    setStatus(null);
     setActiveSync({ mode, providerMode });
+    const toastId = toast.loading(t("sync.syncing"));
     try {
       const firstResult = await runConfiguredSync(mode, { providerMode, setting: setting ?? undefined });
       if (firstResult.status === "conflict") {
-        setStatus(firstResult);
+        toast.dismiss(toastId);
         setPendingConflict({ mode, providerMode, result: firstResult });
       } else {
-        setStatus(firstResult);
+        await finishRemoteSync(firstResult, toastId);
       }
+    } catch (error) {
+      toast.error(formatUnexpectedError(error, t), { id: toastId });
     } finally {
       setActiveSync(null);
     }
@@ -101,11 +96,27 @@ export function SyncPage() {
     const { mode, providerMode } = pendingConflict;
     setPendingConflict(null);
     setActiveSync({ mode, providerMode });
+    const toastId = toast.loading(t("sync.syncing"));
     try {
-      setStatus(await runConfiguredSync(mode, { force: true, providerMode, setting: setting ?? undefined }));
+      await finishRemoteSync(
+        await runConfiguredSync(mode, { force: true, providerMode, setting: setting ?? undefined }),
+        toastId
+      );
+    } catch (error) {
+      toast.error(formatUnexpectedError(error, t), { id: toastId });
     } finally {
       setActiveSync(null);
     }
+  }
+
+  async function finishRemoteSync(result: RemoteSyncResult, toastId: string | number) {
+    if (result.status === "pulled") {
+      // A forced pull can replace data without changing its dataVersion. Explicitly
+      // invalidate page state because chrome.storage.onChanged will not fire for an
+      // unchanged version value.
+      await refreshSpaceVersion();
+    }
+    showRemoteSyncToast(result, t, { id: toastId });
   }
 
   const disabled = !setting;
@@ -250,8 +261,6 @@ export function SyncPage() {
               </>
             ) : null}
           </ProviderCard>
-
-          {status ? <RemoteStatus result={status} t={t} onDismiss={() => setStatus(null)} /> : null}
         </section>
       </div>
 
@@ -425,33 +434,17 @@ function SyncActionRow({
   );
 }
 
-function RemoteStatus({ result, t, onDismiss }: { result: RemoteSyncResult; t: Translate; onDismiss: () => void }) {
-  return (
-    <div
-      data-sync-status={result.status}
-      data-sync-message={result.message}
-      role="status"
-      aria-live="polite"
-      className={[
-        "flex min-h-9 items-center justify-between gap-3 rounded-md border px-3 py-1 text-sm",
-        result.status === "error" || result.status === "conflict" ? "text-destructive" : "",
-        result.status === "pushed" || result.status === "pulled" || result.status === "noop" ? "text-primary" : ""
-      ].join(" ")}
-    >
-      <span>{formatRemoteStatus(result, t)}</span>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="h-7 w-7 shrink-0"
-        title={t("common.close")}
-        aria-label={t("common.close")}
-        onClick={onDismiss}
-      >
-        <X className="h-4 w-4" />
-      </Button>
-    </div>
-  );
+function showRemoteSyncToast(result: RemoteSyncResult, t: Translate, options?: ExternalToast) {
+  const message = formatRemoteStatus(result, t);
+  if (result.status === "error" || result.status === "conflict") {
+    toast.error(message, options);
+    return;
+  }
+  if (result.status === "noop") {
+    toast.info(message, options);
+    return;
+  }
+  toast.success(message, options);
 }
 
 function formatRemoteStatus(result: RemoteSyncResult, t: Translate) {
@@ -463,6 +456,11 @@ function formatRemoteStatus(result: RemoteSyncResult, t: Translate) {
     result.message === "sync.nogithubToken" || result.message === "sync.miss_webdav_credentials"
       ? t(result.message)
       : result.message;
+  return reason ? `${t("sync.operationFailed")}: ${reason}` : t("sync.operationFailed");
+}
+
+function formatUnexpectedError(error: unknown, t: Translate) {
+  const reason = error instanceof Error ? error.message : "";
   return reason ? `${t("sync.operationFailed")}: ${reason}` : t("sync.operationFailed");
 }
 
