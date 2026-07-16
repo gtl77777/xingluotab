@@ -1,5 +1,17 @@
 import { FileText, Link2, Puzzle, Settings2, Square, Terminal } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  buildBrowserFaviconUrl,
+  getFaviconCacheRevision,
+  getFaviconSources,
+  invalidateFaviconDisplaySource,
+  invalidateFaviconSource,
+  peekReadyFavicon,
+  prepareFavicon,
+  prepareFavicons,
+  type PrepareFaviconsOptions,
+  type RuntimeGetUrl
+} from "./faviconCache";
 
 type FaviconProps = {
   src?: string;
@@ -13,76 +25,17 @@ export type FaviconFallback = {
   tone: number;
 };
 
-type RuntimeGetUrl = (path: string) => string;
-
 const FAVICON_TONE_COUNT = 6;
-const DEFAULT_FAVICON_SENTINEL_URL = "https://xingluotab-favicon.invalid/";
-let defaultBrowserFaviconFingerprint: Promise<number | undefined> | undefined;
-const browserFaviconDefaultState = new Map<string, Promise<boolean>>();
-const faviconPreloadCache = new Map<string, Promise<void>>();
-
-export function buildBrowserFaviconUrl(pageUrl: string | undefined, size = 32, getUrl?: RuntimeGetUrl) {
-  if (!pageUrl) return undefined;
-  try {
-    const parsedPageUrl = new URL(pageUrl);
-    if (parsedPageUrl.protocol !== "http:" && parsedPageUrl.protocol !== "https:") return undefined;
-    const runtimeGetUrl = getUrl ?? globalThis.chrome?.runtime?.getURL?.bind(globalThis.chrome.runtime);
-    if (!runtimeGetUrl) return undefined;
-    const faviconUrl = new URL(runtimeGetUrl("/_favicon/"));
-    faviconUrl.searchParams.set("pageUrl", parsedPageUrl.toString());
-    faviconUrl.searchParams.set("size", String(size));
-    faviconUrl.searchParams.set("forceEmptyDefaultFavicon", "1");
-    faviconUrl.searchParams.set("forceLightMode", "1");
-    return faviconUrl.toString();
-  } catch {
-    return undefined;
-  }
-}
-
-export function getFaviconSources(src: string | undefined, pageUrl: string | undefined, getUrl?: RuntimeGetUrl) {
-  const browserFaviconUrl = buildBrowserFaviconUrl(pageUrl, 32, getUrl);
-  return [...new Set([src?.trim() || undefined, browserFaviconUrl].filter((value): value is string => Boolean(value)))];
-}
 
 export async function preloadFavicons(
   items: Array<{ src?: string; url?: string }>,
-  timeoutMs = 180
+  options: number | PrepareFaviconsOptions = {}
 ) {
-  if (typeof Image === "undefined") return;
-  const sources = [...new Set(items.flatMap((item) => getFaviconSources(item.src, item.url)))];
-  if (sources.length === 0) return;
-
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < sources.length) {
-      const source = sources[cursor++];
-      if (source) await preloadFaviconSource(source);
-    }
-  };
-  const preload = Promise.all(Array.from({ length: Math.min(8, sources.length) }, () => worker()));
-  await Promise.race([
-    preload,
-    new Promise<void>((resolve) => globalThis.setTimeout(resolve, timeoutMs))
-  ]);
+  return prepareFavicons(items, typeof options === "number" ? { timeoutMs: options } : options);
 }
 
-function preloadFaviconSource(source: string) {
-  const cached = faviconPreloadCache.get(source);
-  if (cached) return cached;
-  const result = new Promise<void>((resolve) => {
-    const image = new Image();
-    image.decoding = "async";
-    image.onload = () => resolve();
-    image.onerror = () => resolve();
-    image.src = source;
-  });
-  if (faviconPreloadCache.size >= 4096) {
-    const oldest = faviconPreloadCache.keys().next().value;
-    if (oldest) faviconPreloadCache.delete(oldest);
-  }
-  faviconPreloadCache.set(source, result);
-  return result;
-}
+export { buildBrowserFaviconUrl, getFaviconCacheRevision, getFaviconSources };
+export type { RuntimeGetUrl };
 
 export function getFaviconFallback(pageUrl: string | undefined, title: string): FaviconFallback {
   try {
@@ -113,19 +66,35 @@ export function getFaviconFallback(pageUrl: string | undefined, title: string): 
 export function Favicon({ src, title, url }: FaviconProps) {
   const sources = useMemo(() => getFaviconSources(src, url), [src, url]);
   const sourceSignature = sources.join("\n");
-  const [sourceIndex, setSourceIndex] = useState(0);
-  const [loadedSource, setLoadedSource] = useState<string>();
+  const [readyState, setReadyState] = useState(() => ({
+    signature: sourceSignature,
+    result: peekReadyFavicon(src, url)
+  }));
   const sourceGeneration = useRef(0);
+  const ready = readyState.signature === sourceSignature
+    ? readyState.result
+    : peekReadyFavicon(src, url);
 
   useEffect(() => {
     sourceGeneration.current += 1;
-    setSourceIndex(0);
-    setLoadedSource(undefined);
-  }, [sourceSignature]);
+    const generation = sourceGeneration.current;
+    const cached = peekReadyFavicon(src, url);
+    setReadyState({ signature: sourceSignature, result: cached });
+    if (cached || sources.length === 0) return;
+    let cancelled = false;
+    void prepareFavicon(src, url).then((result) => {
+      if (!cancelled && generation === sourceGeneration.current) {
+        setReadyState({ signature: sourceSignature, result });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceSignature, sources, src, url]);
 
-  const activeSource = sources[sourceIndex];
   const browserFaviconSource = buildBrowserFaviconUrl(url);
-  const loaded = Boolean(activeSource && loadedSource === activeSource);
+  const sourceIndex = ready ? Math.max(0, sources.indexOf(ready.source)) : 0;
+  const displaySource = ready?.displaySource ?? ready?.source;
   const fallback = getFaviconFallback(url, title);
 
   return (
@@ -134,40 +103,31 @@ export function Favicon({ src, title, url }: FaviconProps) {
       data-favicon-browser-cache={browserFaviconSource ? "available" : undefined}
       data-favicon-source-index={sourceIndex}
     >
-      <FaviconFallbackTile fallback={fallback} hidden={loaded} />
-      {activeSource ? (
+      <FaviconFallbackTile fallback={fallback} hidden={Boolean(ready)} />
+      {ready && displaySource ? (
         <img
-          key={activeSource}
-          src={activeSource}
+          key={displaySource}
+          src={displaySource}
           alt=""
           title={title}
           draggable={false}
-          className={[
-            "absolute aspect-square h-[62.5%] w-[62.5%] max-h-5 max-w-5 rounded-[3px] object-contain transition-opacity duration-150",
-            loaded ? "opacity-100" : "opacity-0"
-          ].join(" ")}
-          onLoad={(event) => {
-            if (activeSource !== browserFaviconSource) {
-              setLoadedSource(activeSource);
-              return;
-            }
-
-            const generation = sourceGeneration.current;
-            void isDefaultBrowserFavicon(activeSource, event.currentTarget).then((isDefault) => {
-              if (generation !== sourceGeneration.current) return;
-              if (isDefault) {
-                setLoadedSource(undefined);
-                setSourceIndex((current) => current + 1);
-                return;
-              }
-              setLoadedSource(activeSource);
-            });
-          }}
-          loading="lazy"
+          className="absolute aspect-square h-[62.5%] w-[62.5%] max-h-5 max-w-5 rounded-[3px] object-contain"
+          loading="eager"
           decoding="async"
           onError={() => {
-            setLoadedSource(undefined);
-            setSourceIndex((current) => current + 1);
+            const failedSource = ready.source;
+            if (ready.displaySource) {
+              invalidateFaviconDisplaySource(failedSource);
+            } else {
+              invalidateFaviconSource(failedSource);
+            }
+            setReadyState({ signature: sourceSignature, result: undefined });
+            const generation = sourceGeneration.current;
+            void prepareFavicon(src, url).then((result) => {
+              if (generation === sourceGeneration.current) {
+                setReadyState({ signature: sourceSignature, result });
+              }
+            });
           }}
         />
       ) : null}
@@ -175,14 +135,46 @@ export function Favicon({ src, title, url }: FaviconProps) {
   );
 }
 
-export const FaviconPreview = memo(function FaviconPreview({ title, url }: Pick<FaviconProps, "title" | "url">) {
+export const FaviconPreview = memo(function FaviconPreview({
+  src,
+  title,
+  url,
+  showWarmIcon = false,
+  cacheRevision = 0
+}: FaviconProps & { showWarmIcon?: boolean; cacheRevision?: number }) {
   const fallback = useMemo(() => getFaviconFallback(url, title), [title, url]);
+  const ready = showWarmIcon ? peekReadyFavicon(src, url) : undefined;
   return (
     <span
       className="relative flex h-full w-full items-center justify-center"
       data-favicon-preview="true"
+      data-favicon-preview-source={ready?.previewSafe ? "warm" : "fallback"}
+      data-favicon-cache-revision={cacheRevision}
     >
-      <FaviconFallbackTile fallback={fallback} hidden={false} />
+      <FaviconFallbackTile fallback={fallback} hidden={Boolean(ready?.previewSafe)} />
+      {ready?.previewSafe ? (
+        <img
+          src={ready.displaySource ?? ready.source}
+          alt=""
+          title={title}
+          draggable={false}
+          loading="eager"
+          decoding="async"
+          data-favicon-warm-preview="true"
+          className="absolute aspect-square h-[62.5%] w-[62.5%] max-h-5 max-w-5 rounded-[3px] object-contain"
+          onError={(event) => {
+            if (ready.displaySource) {
+              invalidateFaviconDisplaySource(ready.source);
+            } else {
+              invalidateFaviconSource(ready.source);
+            }
+            event.currentTarget.hidden = true;
+            const fallbackElement = event.currentTarget.previousElementSibling;
+            fallbackElement?.classList.remove("opacity-0");
+            fallbackElement?.classList.add("opacity-100");
+          }}
+        />
+      ) : null}
     </span>
   );
 });
@@ -225,75 +217,4 @@ function stableHash(value: string) {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
-}
-
-function getDefaultBrowserFaviconFingerprint() {
-  if (!defaultBrowserFaviconFingerprint) {
-    const source = buildBrowserFaviconUrl(DEFAULT_FAVICON_SENTINEL_URL);
-    defaultBrowserFaviconFingerprint = source
-      ? loadImageFingerprint(source)
-      : Promise.resolve(undefined);
-  }
-  return defaultBrowserFaviconFingerprint;
-}
-
-function isDefaultBrowserFavicon(source: string, image: HTMLImageElement) {
-  const cached = browserFaviconDefaultState.get(source);
-  if (cached) return cached;
-
-  const result = Promise.all([fingerprintImageWhenIdle(image), getDefaultBrowserFaviconFingerprint()]).then(
-    ([fingerprint, defaultFingerprint]) => fingerprint !== undefined && fingerprint === defaultFingerprint
-  );
-  if (browserFaviconDefaultState.size >= 2048) {
-    const oldest = browserFaviconDefaultState.keys().next().value;
-    if (oldest) browserFaviconDefaultState.delete(oldest);
-  }
-  browserFaviconDefaultState.set(source, result);
-  return result;
-}
-
-function fingerprintImageWhenIdle(image: HTMLImageElement) {
-  return new Promise<number | undefined>((resolve) => {
-    const run = () => resolve(fingerprintImage(image));
-    const requestIdle = (
-      globalThis as typeof globalThis & {
-        requestIdleCallback?: (callback: () => void) => number;
-      }
-    ).requestIdleCallback;
-    if (requestIdle) {
-      requestIdle(run);
-      return;
-    }
-    setTimeout(run, 500);
-  });
-}
-
-function loadImageFingerprint(source: string) {
-  return new Promise<number | undefined>((resolve) => {
-    const image = new Image();
-    image.onload = () => resolve(fingerprintImage(image));
-    image.onerror = () => resolve(undefined);
-    image.src = source;
-  });
-}
-
-function fingerprintImage(image: HTMLImageElement) {
-  try {
-    if (image.naturalWidth === 0 || image.naturalHeight === 0) return undefined;
-    const canvas = document.createElement("canvas");
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return undefined;
-    context.drawImage(image, 0, 0);
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    let hash = 2166136261;
-    for (const channel of pixels) {
-      hash ^= channel;
-      hash = Math.imul(hash, 16777619);
-    }
-    return hash >>> 0;
-  } catch {
-    return undefined;
-  }
 }

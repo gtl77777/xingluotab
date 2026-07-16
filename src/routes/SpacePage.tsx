@@ -57,7 +57,7 @@ import {
 } from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
-import { Favicon, FaviconPreview, preloadFavicons } from "../components/ui/Favicon";
+import { Favicon, FaviconPreview, getFaviconCacheRevision, preloadFavicons } from "../components/ui/Favicon";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1736,7 +1736,7 @@ export function SpacePage({ missing }: SpacePageProps) {
                   animateLayout={isGroupLayoutAnimating}
                   isDragActive={Boolean(activeDrag)}
                   activeGroupId={activeDrag && (activeDrag.type === "tab" || activeDrag.type === "group") ? activeDrag.groupId : null}
-                  prepareContent={(previewItems) => {
+                  prepareContent={(previewItems, signal) => {
                     const faviconItems = previewItems.flatMap(({ index, scrollOffset, viewportHeight }) => {
                       const group = visibleGroups[index];
                       if (!group) return [];
@@ -1748,9 +1748,9 @@ export function SpacePage({ missing }: SpacePageProps) {
                         viewportHeight
                       ).tabs.map((tab) => ({ src: tab.favIconUrl, url: tab.url }));
                     });
-                    return preloadFavicons(faviconItems);
+                    return preloadFavicons(faviconItems, { concurrency: 4, timeoutMs: 180, signal });
                   }}
-                  renderPreview={(groupIndex, scrollOffset, viewportHeight, buffered) => {
+                  renderPreview={(groupIndex, scrollOffset, viewportHeight, buffered, showWarmFavicons) => {
                     const group = visibleGroups[groupIndex];
                     if (!group) return null;
                     return (
@@ -1766,6 +1766,7 @@ export function SpacePage({ missing }: SpacePageProps) {
                         viewportHeight={viewportHeight}
                         activeDragType={buffered ? null : activeDrag?.type ?? null}
                         buffered={buffered}
+                        showWarmFavicons={showWarmFavicons}
                         t={t}
                         onOpenTab={handleOpenTab}
                       />
@@ -2231,8 +2232,17 @@ function VirtualizedGroupWindow({
   animateLayout: boolean;
   isDragActive: boolean;
   activeGroupId: string | null;
-  prepareContent: (items: Array<{ index: number; scrollOffset: number; viewportHeight: number }>) => Promise<void>;
-  renderPreview: (index: number, scrollOffset: number, viewportHeight: number, buffered: boolean) => ReactNode;
+  prepareContent: (
+    items: Array<{ index: number; scrollOffset: number; viewportHeight: number; visible: boolean }>,
+    signal: AbortSignal
+  ) => Promise<void>;
+  renderPreview: (
+    index: number,
+    scrollOffset: number,
+    viewportHeight: number,
+    buffered: boolean,
+    showWarmFavicons: boolean
+  ) => ReactNode;
   children: (index: number, start: number) => ReactNode;
 }) {
   const virtualizer = useVirtualizer({
@@ -2264,6 +2274,7 @@ function VirtualizedGroupWindow({
     if (interactiveLayerRevealed && currentKeys.every((key) => interactiveGroupKeys.has(key))) return;
     setInteractiveLayerRevealed(false);
     let cancelled = false;
+    const prepareController = new AbortController();
     let activationFrame: number | null = null;
     let revealFrame: number | null = null;
     const scroller = scrollElementRef.current;
@@ -2271,7 +2282,7 @@ function VirtualizedGroupWindow({
     const viewportHeight = scroller?.clientHeight ?? 900;
     const viewportBottom = scrollTop + viewportHeight;
     const viewportCenter = scrollTop + viewportHeight / 2;
-    const activationKeys = [...virtualItems]
+    const prioritizedItems = [...virtualItems]
       .sort((left, right) => {
         const leftVisible = left.end > scrollTop && left.start < viewportBottom;
         const rightVisible = right.end > scrollTop && right.start < viewportBottom;
@@ -2279,15 +2290,17 @@ function VirtualizedGroupWindow({
         const leftCenter = (left.start + left.end) / 2;
         const rightCenter = (right.start + right.end) / 2;
         return Math.abs(leftCenter - viewportCenter) - Math.abs(rightCenter - viewportCenter);
-      })
+      });
+    const activationKeys = prioritizedItems
       .map((item) => String(item.key))
       .filter((key) => !interactiveGroupKeys.has(key));
-    const previewItems = virtualItems.map((item) => ({
+    const previewItems = prioritizedItems.map((item) => ({
       index: item.index,
       scrollOffset: Math.max(0, scrollTop - item.start),
-      viewportHeight
+      viewportHeight,
+      visible: item.end > scrollTop && item.start < viewportBottom
     }));
-    void prepareContentRef.current(previewItems).then(() => {
+    void prepareContentRef.current(previewItems, prepareController.signal).then(() => {
       if (cancelled) return;
       if (activationKeys.length === 0) {
         setInteractiveLayerRevealed(true);
@@ -2322,6 +2335,7 @@ function VirtualizedGroupWindow({
     });
     return () => {
       cancelled = true;
+      prepareController.abort();
       if (activationFrame != null) window.cancelAnimationFrame(activationFrame);
       if (revealFrame != null) window.cancelAnimationFrame(revealFrame);
     };
@@ -2337,6 +2351,10 @@ function VirtualizedGroupWindow({
         {virtualItems.map((virtualItem) => {
           const key = String(virtualItem.key);
           const isActiveGroup = key === activeGroupId;
+          const scroller = scrollElementRef.current;
+          const scrollTop = scroller?.scrollTop ?? 0;
+          const viewportBottom = scrollTop + (scroller?.clientHeight ?? 900);
+          const showWarmFavicons = virtualItem.end > scrollTop && virtualItem.start < viewportBottom;
           const interactiveReady = isActiveGroup || interactiveGroupKeys.has(key);
           const showPreviewOnly = !isActiveGroup && (isScrolling || !interactiveReady);
           const showBufferedPreview = !isActiveGroup && !isScrolling && interactiveReady && !interactiveLayerRevealed;
@@ -2360,7 +2378,8 @@ function VirtualizedGroupWindow({
                 virtualItem.index,
                 Math.max(0, (scrollElementRef.current?.scrollTop ?? 0) - virtualItem.start),
                 scrollElementRef.current?.clientHeight ?? 900,
-                false
+                false,
+                showWarmFavicons
               )
             ) : (
               <>
@@ -2374,7 +2393,8 @@ function VirtualizedGroupWindow({
                       virtualItem.index,
                       Math.max(0, (scrollElementRef.current?.scrollTop ?? 0) - virtualItem.start),
                       scrollElementRef.current?.clientHeight ?? 900,
-                      true
+                      true,
+                      showWarmFavicons
                     )}
                   </div>
                 ) : null}
@@ -2464,6 +2484,7 @@ const StaticGroupPreview = memo(function StaticGroupPreview({
   viewportHeight,
   activeDragType,
   buffered,
+  showWarmFavicons,
   t,
   onOpenTab
 }: {
@@ -2478,6 +2499,7 @@ const StaticGroupPreview = memo(function StaticGroupPreview({
   viewportHeight: number;
   activeDragType: XingLuoTabDragData["type"] | null;
   buffered: boolean;
+  showWarmFavicons: boolean;
   t: Translate;
   onOpenTab: (tab: RecordTab, event: MouseEvent) => void;
 }) {
@@ -2508,7 +2530,8 @@ const StaticGroupPreview = memo(function StaticGroupPreview({
           tab,
           tabIndex: previewWindow.firstTabIndex + previewOffset,
           view,
-          reserveActions: !zenMode
+          reserveActions: !zenMode,
+          showWarmFavicons
         };
         return tabDropEnabled
           ? <StaticTabDropPreviewCard key={tab.id} {...props} />
@@ -2588,6 +2611,7 @@ type StaticTabPreviewCardProps = {
   tabIndex: number;
   view: CollectionView;
   reserveActions: boolean;
+  showWarmFavicons: boolean;
 };
 
 function StaticTabDropPreviewCard(props: StaticTabPreviewCardProps) {
@@ -2599,7 +2623,7 @@ function StaticTabDropPreviewCard(props: StaticTabPreviewCardProps) {
   return <StaticTabPreviewCard {...props} nodeRef={droppable.setNodeRef} isOver={droppable.isOver} droppableId={droppableId} />;
 }
 
-function StaticTabPreviewCard({ tab, tabIndex, view, reserveActions, nodeRef, isOver = false, droppableId }: StaticTabPreviewCardProps & {
+function StaticTabPreviewCard({ tab, tabIndex, view, reserveActions, showWarmFavicons, nodeRef, isOver = false, droppableId }: StaticTabPreviewCardProps & {
   nodeRef?: (node: HTMLDivElement | null) => void;
   isOver?: boolean;
   droppableId?: string;
@@ -2633,7 +2657,13 @@ function StaticTabPreviewCard({ tab, tabIndex, view, reserveActions, nodeRef, is
         "relative flex shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted",
         view === "card" ? "h-8 w-8" : view === "list" ? "h-7 w-7" : "h-6 w-6"
       ].join(" ")}>
-        <FaviconPreview title={tab.title || tab.url} url={tab.url} />
+        <FaviconPreview
+          src={tab.favIconUrl}
+          title={tab.title || tab.url}
+          url={tab.url}
+          showWarmIcon={showWarmFavicons}
+          cacheRevision={getFaviconCacheRevision()}
+        />
       </span>
       <div className="ml-2 min-w-0 flex-1">
         <p className={view === "card" ? "line-clamp-2 leading-5" : "truncate text-sm"}>{tab.title || tab.url}</p>

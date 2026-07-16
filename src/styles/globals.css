@@ -268,7 +268,7 @@
 
 @layer utilities {
   .favicon-fallback {
-    @apply absolute inset-0 flex items-center justify-center overflow-hidden font-semibold transition-opacity duration-150;
+    @apply absolute inset-0 flex items-center justify-center overflow-hidden font-semibold;
     border: 1px solid hsl(var(--favicon-hue) 28% 82%);
     border-radius: inherit;
     background: hsl(var(--favicon-hue) 40% 92%);

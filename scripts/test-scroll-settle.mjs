@@ -217,7 +217,8 @@ async function main() {
             id: 'tab_' + groupIndex + '_' + tabIndex,
             kind: 'record',
             title: 'Tab ' + (groupIndex + 1) + '-' + (tabIndex + 1),
-            url: 'https://example.com/' + groupIndex + '/' + tabIndex
+            url: 'https://example.com/' + groupIndex + '/' + tabIndex,
+            favIconUrl: chrome.runtime.getURL('/icon/32.png') + '?tab=' + groupIndex + '-' + tabIndex
           }))
         }))
       };
@@ -278,7 +279,9 @@ async function main() {
     await cdp.evaluate(`(() => {
       const stats = {
         frameGaps: [],
+        frameSamples: [],
         longTasks: [],
+        phases: {},
         layoutShifts: [],
         initialGroupHeights: Array.from(document.querySelectorAll('[data-group-card="true"]')).map((group) =>
           Math.round(group.getBoundingClientRect().height * 100) / 100
@@ -297,7 +300,9 @@ async function main() {
       let previousStatic = -1;
       let previousBuffered = -1;
       const tick = (now) => {
-        stats.frameGaps.push(now - previous);
+        const frameGap = now - previous;
+        stats.frameGaps.push(frameGap);
+        stats.frameSamples.push({ time: now, gap: frameGap });
         previous = now;
         const interactive = document.querySelectorAll('[data-group-card="true"]').length;
         const statics = document.querySelectorAll('[data-group-static-preview="true"]').length;
@@ -362,7 +367,7 @@ async function main() {
       requestAnimationFrame(tick);
       try {
         const longTasks = new PerformanceObserver((list) => {
-          for (const entry of list.getEntries()) stats.longTasks.push(entry.duration);
+          for (const entry of list.getEntries()) stats.longTasks.push({ startTime: entry.startTime, duration: entry.duration });
         });
         longTasks.observe({ entryTypes: ['longtask'] });
         stats.longTaskObserver = longTasks;
@@ -388,6 +393,7 @@ async function main() {
     if (!scrollTarget) throw new Error("Missing space content scroller");
 
     await sleep(100);
+    await cdp.evaluate("window.__scrollSettleStats.phases.coldScrollStart = performance.now()");
     for (let step = 0; step < 18; step += 1) {
       await cdp.send("Input.dispatchMouseEvent", {
         type: "mouseWheel",
@@ -398,13 +404,16 @@ async function main() {
       });
       await sleep(16);
     }
+    await cdp.evaluate("window.__scrollSettleStats.phases.coldScrollEnd = performance.now()");
 
     const previewStats = await cdp.evaluate(`(() => ({
       scrollTop: document.querySelector('[data-space-content-scroll="true"]')?.scrollTop ?? 0,
       staticGroups: document.querySelectorAll('[data-group-static-preview="true"]').length,
       interactiveGroups: document.querySelectorAll('[data-group-card="true"]').length,
       staticTabs: document.querySelectorAll('[data-static-tab-preview="true"]').length,
-      interactiveTabs: document.querySelectorAll('[data-record-tab-card="true"]').length
+      interactiveTabs: document.querySelectorAll('[data-record-tab-card="true"]').length,
+      warmPreviewIcons: document.querySelectorAll('[data-favicon-warm-preview="true"]').length,
+      fallbackPreviewIcons: document.querySelectorAll('[data-favicon-preview-source="fallback"]').length
     }))()`);
     const previewGeometry = await cdp.evaluate(geometryExpression('[data-static-tab-preview="true"]'));
     const previewSurfaceStyle = await cdp.evaluate(`(() => {
@@ -504,12 +513,71 @@ async function main() {
     })()`);
     if (settledScreenshot) await captureScreenshot(cdp, settledScreenshot);
 
+    await cdp.evaluate("performance.clearResourceTimings(); window.__scrollSettleStats.phases.warmScrollStart = performance.now()");
+    for (let step = 0; step < 4; step += 1) {
+      await cdp.send("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x: scrollTarget.x,
+        y: scrollTarget.y,
+        deltaX: 0,
+        deltaY: -240
+      });
+      await sleep(16);
+    }
+    await cdp.evaluate("window.__scrollSettleStats.phases.warmScrollEnd = performance.now()");
+    const warmPreviewStats = await cdp.evaluate(`(() => {
+      const scroller = document.querySelector('[data-space-content-scroll="true"]');
+      const scrollerRect = scroller?.getBoundingClientRect();
+      const warmIcons = Array.from(document.querySelectorAll('[data-favicon-warm-preview="true"]'));
+      const warmGroups = Array.from(new Set(warmIcons.map((icon) => icon.closest('[data-group-virtual-row="true"]')).filter(Boolean)));
+      const warmOutsideViewportGroups = warmGroups.filter((group) => {
+        if (!scrollerRect) return true;
+        const rect = group.getBoundingClientRect();
+        return rect.bottom <= scrollerRect.top || rect.top >= scrollerRect.bottom;
+      });
+      const resourceEntries = performance.getEntriesByType('resource').map((entry) => ({
+        name: entry.name,
+        transferSize: entry.transferSize,
+        encodedBodySize: entry.encodedBodySize
+      }));
+      return {
+        scrollTop: scroller?.scrollTop ?? 0,
+        staticGroups: document.querySelectorAll('[data-group-static-preview="true"]').length,
+        previewIcons: document.querySelectorAll('[data-favicon-preview="true"]').length,
+        warmPreviewIcons: warmIcons.length,
+        fallbackPreviewIcons: document.querySelectorAll('[data-favicon-preview-source="fallback"]').length,
+        warmPreviewGroupCount: warmGroups.length,
+        warmOutsideViewportGroupCount: warmOutsideViewportGroups.length,
+        resourceEntryCount: resourceEntries.length,
+        transferredResourceCount: resourceEntries.filter((entry) => entry.transferSize > 0).length
+      };
+    })()`);
+    await waitFor(
+      cdp,
+      "document.querySelectorAll('[data-group-static-preview=\"true\"]').length === 0 && document.querySelectorAll('[data-group-card=\"true\"]').length > 0",
+      "warm-cache scroll settled",
+      5000
+    );
+
     const performanceStats = await cdp.evaluate(`(() => {
       const stats = window.__scrollSettleStats;
       stats.stopped = true;
       stats.longTaskObserver?.disconnect();
       stats.layoutShiftObserver?.disconnect();
       const gaps = stats.frameGaps.slice().sort((a, b) => a - b);
+      const phaseMetrics = (start, end) => {
+        const samples = stats.frameSamples.filter((sample) => sample.time >= start && sample.time <= end);
+        const phaseGaps = samples.map((sample) => sample.gap).sort((a, b) => a - b);
+        const phaseLongTasks = stats.longTasks.filter((task) => task.startTime >= start && task.startTime <= end);
+        const percentile = (ratio) => phaseGaps[Math.min(phaseGaps.length - 1, Math.floor(phaseGaps.length * ratio))] ?? 0;
+        return {
+          frameCount: phaseGaps.length,
+          p95FrameGapMs: Math.round(percentile(0.95) * 10) / 10,
+          maxFrameGapMs: Math.round(Math.max(0, ...phaseGaps) * 10) / 10,
+          longTaskCount: phaseLongTasks.length,
+          maxLongTaskMs: Math.round(Math.max(0, ...phaseLongTasks.map((task) => task.duration)) * 10) / 10
+        };
+      };
       const hydrationFrames = stats.settleFrames.filter((frame) => frame.interactive > 0 && frame.statics > 0);
       const uncoveredHydrationFrames = hydrationFrames.filter((frame) => frame.buffered < frame.interactive);
       const percentile = (ratio) => gaps[Math.min(gaps.length - 1, Math.floor(gaps.length * ratio))] ?? 0;
@@ -519,7 +587,9 @@ async function main() {
         p95FrameGapMs: Math.round(percentile(0.95) * 10) / 10,
         maxFrameGapMs: Math.round((gaps[gaps.length - 1] ?? 0) * 10) / 10,
         longTaskCount: stats.longTasks.length,
-        maxLongTaskMs: Math.round(Math.max(0, ...stats.longTasks) * 10) / 10,
+        maxLongTaskMs: Math.round(Math.max(0, ...stats.longTasks.map((task) => task.duration)) * 10) / 10,
+        coldScroll: phaseMetrics(stats.phases.coldScrollStart, stats.phases.coldScrollEnd),
+        warmScroll: phaseMetrics(stats.phases.warmScrollStart, stats.phases.warmScrollEnd),
         cumulativeLayoutShift: Math.round(stats.layoutShifts.reduce((sum, value) => sum + value, 0) * 10000) / 10000,
         interactiveGroupCounts: stats.interactiveGroupCounts,
         staticGroupCounts: stats.staticGroupCounts,
@@ -622,8 +692,15 @@ async function main() {
     const ok =
       previewStats.staticGroups > 0 &&
       previewStats.interactiveGroups === 0 &&
+      previewStats.warmPreviewIcons === 0 &&
       settledStats.staticGroups === 0 &&
       settledStats.interactiveGroups > 0 &&
+      warmPreviewStats.staticGroups > 0 &&
+      warmPreviewStats.warmPreviewIcons > 0 &&
+      warmPreviewStats.warmOutsideViewportGroupCount === 0 &&
+      warmPreviewStats.transferredResourceCount === 0 &&
+      performanceStats.warmScroll.longTaskCount === 0 &&
+      performanceStats.warmScroll.maxFrameGapMs <= 50 &&
       progressiveRestore &&
       performanceStats.bufferedHydrationFrameCount > 0 &&
       performanceStats.uncoveredHydrationFrameCount === 0 &&
@@ -655,6 +732,7 @@ async function main() {
       extensionId,
       previewStats,
       settledStats,
+      warmPreviewStats,
       scrollTopDeltaPx,
       geometry,
       cardSurfaceStyle: {
